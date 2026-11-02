@@ -1,0 +1,14 @@
+#!/bin/sh
+# m52xq (classic): uNav 3.22 (click navigator.costales) takes the light and the dark map from CARTO (basemaps.cartocdn.com), which now
+# answers every tile with "API KEY REQUIRED carto.com/basemaps/apikey" -> the map is a grey grid with that text. Both layers are pointed at
+# the standard OpenStreetMap tiles (there is no dark OSM set: the night map becomes the same light one). The CyclOSM layer is not touched.
+# Run again after uNav is updated from OpenStore. The original is kept as index.html.orig.
+for D in /opt/click.ubuntu.com/navigator.costales/*/nav; do
+	F="$D/index.html"
+	[ -f "$F" ] || continue
+	grep -q "cartocdn.com" "$F" || { echo "m52xq-unav-tiles: $F: already patched"; continue; }
+	[ -f "$F.orig" ] || cp -p "$F" "$F.orig"
+	sed -i -e "s#https://{a-c}.basemaps.cartocdn.com/rastertiles/voyager_labels_under/{z}/{x}/{y}.png#https://tile.openstreetmap.org/{z}/{x}/{y}.png#" \
+	       -e "s#https://{a-c}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png#https://tile.openstreetmap.org/{z}/{x}/{y}.png#" "$F"
+	echo "m52xq-unav-tiles: $F patched ($(grep -c 'tile.openstreetmap.org' "$F") OSM layers)"
+done

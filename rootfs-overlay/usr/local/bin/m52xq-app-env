@@ -1,0 +1,41 @@
+#!/bin/sh
+# m52xq (убунтутач24/003): Lomiri passes its apps only part of its environment (QT_*, XDG_*, MIR_* ...), not GRID_UNIT_PX or LANG,
+# so every Ubuntu Touch (UITK) app came up with the default 8 px grid unit, ~2.5 times too small. The app .desktop
+# copies in /usr/local/share/applications start the app through this script.
+export GRID_UNIT_PX="${GRID_UNIT_PX:-21}"
+# started by lomiri-url-dispatcher (System Settings from the shade) a Qt 5 app gets no QT_QPA_PLATFORM and tries xcb
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland-egl}"
+export EGL_PLATFORM=wayland
+unset DISPLAY
+# Qt 6 Multimedia: the FFmpeg backend decodes video in software (4K H.264: 429 % CPU in lomiri-mediaplayer-app); the GStreamer one
+# (libgstreamermediaplugin.so, built in build-qt6-multimedia) picks the Venus V4L2 decoder (/dev/video17): ~84 % of one core.
+export QT_MEDIA_BACKEND="${QT_MEDIA_BACKEND:-gstreamer}"
+# Qt 5 WebEngine of Ubuntu Touch (libQt5WebEngineCore) links libandroid-properties -> libhybris, which dlopen()s its Android linker
+# (libhybris/linker/q.so) at run time: in a click webapp (YouTube from OpenStore) "Failed to load hybris linker for Android SDK
+# version 29: cannot allocate memory in static TLS block" and a SEGV at once. More room for static TLS fixes it.
+export GLIBC_TUNABLES="${GLIBC_TUNABLES:-glibc.rtld.optional_static_tls=65536}"
+# GPU for the apps: libEGL_mesa with EGL_WL_bind_wayland_display lives in /usr/local/lib/m52xq-mesa (environment.d 94-m52xq-mesa.conf).
+# Lomiri does not pass LD_LIBRARY_PATH to the click apps it starts (aa-exec-click then sets only the package's own libraries), so a
+# click webapp (YouTube) ran with software graphics: no /dev/dri in its process, 300 % CPU on 4K video.
+case ":$LD_LIBRARY_PATH:" in
+*:/usr/local/lib/m52xq-mesa:*) ;;
+*) export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/usr/local/lib/m52xq-mesa" ;;
+esac
+# what Lomiri gives the apps it starts from the launcher but lomiri-url-dispatcher does not: without them an app opened from
+# the shade / a link drew its own desktop title bar ("clock.ubports" with minimize/maximize/close) and had no OSK
+export QT_WAYLAND_DISABLE_WINDOWDECORATION="${QT_WAYLAND_DISABLE_WINDOWDECORATION:-1}"
+export QT_QUICK_CONTROLS_MOBILE="${QT_QUICK_CONTROLS_MOBILE:-true}"
+export QT_IM_MODULE="${QT_IM_MODULE:-maliit}"
+export UITK_ICON_THEME="${UITK_ICON_THEME:-suru}"
+# the language is not passed either (System Settings and the apps stayed English): the one of the wizard / Settings
+l=$(busctl --system get-property org.freedesktop.Accounts "/org/freedesktop/Accounts/User$(id -u)" \
+	org.freedesktop.Accounts.User Language 2>/dev/null | sed -n 's/^s "\(.*\)"$/\1/p')
+[ -n "$l" ] && export LANG="${l%%.*}.UTF-8" LANGUAGE="${l%%.*}"
+# Brightness page of System Settings did not load: libLomiriBrightnessPanel.so (lomiri-system-settings 1.5.0) leaves
+# DeviceModel::slotAdapterPropertiesChanged undefined ("plugin cannot be loaded for module Lomiri.SystemSettings.Brightness").
+# An empty stub of that one symbol is preloaded for Settings only (preloading the whole libLomiriBluetoothPanel.so broke the
+# other pages: "LomiriSoundPanel is not a type" etc.)
+case "$1" in
+lomiri-system-settings) export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/usr/local/lib/m52xq-settings-stub/libm52xq-settings-stub.so" ;;
+esac
+exec "$@"

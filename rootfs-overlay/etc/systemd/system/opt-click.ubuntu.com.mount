@@ -1,0 +1,12 @@
+[Unit]
+Description=M52XQ: click apps (OpenStore) on the userdata partition
+Requires=m52xq-userdata-dirs.service
+After=m52xq-userdata-dirs.service
+ConditionPathIsDirectory=/run/m52xq-rootsrc/userdata/m52xq/click
+[Mount]
+What=/run/m52xq-rootsrc/userdata/m52xq/click
+Where=/opt/click.ubuntu.com
+Type=none
+Options=bind
+[Install]
+WantedBy=local-fs.target

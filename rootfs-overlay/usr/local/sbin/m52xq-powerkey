@@ -1,0 +1,685 @@
+#!/usr/bin/python3
+# M52XQ (убунтутач24/003, Lomiri): what repowerd does on Ubuntu Touch, as far as this image needs it.
+# 1) Short press of the power key: repowerd gets the key from unity-system-compositor, which this image does not have,
+#    so a short press did nothing (Lomiri itself only handles the long press: its power dialog). Screen on -> Lomiri lock
+#    screen (org.gnome.ScreenSaver.Lock) + backlight 0 + touchscreen inhibited (no touches in the pocket); screen off ->
+#    backlight back + touchscreen on (the lock screen is there, unlock by swipe). Longer presses are left to Lomiri.
+# 2) com.canonical.Unity.Screen DisplayPowerStateChange(status, reason) on the system bus: qtmir runs its orientation
+#    sensor only after "display on" from it, so the screen never rotated (one reading at start, then nothing). Sent at
+#    start, every 15 s while the screen is on (Lomiri restarts) and on every screen on / off.
+# 4) com.lomiri.Repowerd (the part of repowerd the shade uses): the brightness slider of ayatana-indicator-power calls
+#    getBrightnessParams / setUserBrightness there, nothing answered (slider without effect); "Adjust brightness
+#    automatically" = userAutobrightnessEnable: the ambient light of iio-sensor-proxy (claimed while it is on) sets the
+#    backlight, the slider value is the user's level for "normal" light. The wakelock calls only get cookies.
+# 3) Rotation: qtmir creates its QOrientationSensor in the Mir thread, which gets no D-Bus signals: start() reads the
+#    orientation once (synchronously), the later PropertiesChanged of iio-sensor-proxy never arrive. We watch
+#    iio-sensor-proxy ourselves and on every new AccelerometerOrientation send "display off, display on": qtmir stops and
+#    starts its sensor and reads the new orientation.
+# 5) v2 (26.10): inactivity and system sleep, which PowerDevil did in the Plasma image (all night not one suspend,
+#    8 %/h, the screen never went off by itself). Touches / keys are activity; after dim-timeout the backlight dims,
+#    after activity-timeout (com.lomiri.touch.system, "Lock phone when idle" in Settings; 0 = never) lock + screen off.
+#    keepDisplayOn ("Keep screen on" in the shade, players) holds the screen on until removeDisplayOnRequest or until
+#    its client is gone. Screen off for SLEEP_AFTER s, no requestSysState, no call, no sound -> systemctl suspend. After
+#    a resume: a wake-up by Wi-Fi / mobile data stays dark (system-sleep/m52xq-wifi-dark.sh suspends again), any other
+#    (power key, call, SMS) turns the screen on.
+import fcntl, glob, math, os, struct, subprocess, threading, time
+from gi.repository import Gio, GLib
+
+SHORT = 1.0	# s
+BL = glob.glob('/sys/class/backlight/*/brightness')[0]
+SAVED = '/run/m52xq-powerkey.brightness'
+USER = 'user'
+NAME, PATH, IFACE = 'com.canonical.Unity.Screen', '/com/canonical/Unity/Screen', 'com.canonical.Unity.Screen'
+bus = None
+SLEEP_AFTER = 10	# s of screen off before the suspend
+RESUME_GRACE = 30	# s after a resume (m52xq-wifi-dark keeps a dark wake-up 20 s, then suspends itself)
+DIM_LEVEL = 0.3	# of the brightness
+OFF_DELAY = 2500	# ms between backlight off and "display off" to Lomiri
+TOUCH = 'Synaptics TCM Oncell Touchscreen'
+idle = {'last': time.monotonic(), 'dimmed': False, 'off_since': None, 'dim_t': 45, 'off_t': 60, 'gs': None,
+	'keep': {}, 'sys': {}, 'resumed': 0.0, 'next_try': 0.0, 'key_ignore': 0.0}
+
+
+def log(msg):
+	print('m52xq-powerkey: ' + msg, flush=True)
+
+
+def find(name):
+	for d in glob.glob('/sys/class/input/input*'):
+		try:
+			if open(d + '/name').read().strip() == name:
+				return d
+		except OSError:
+			pass
+	return None
+
+
+def write(path, value):
+	try:
+		with open(path, 'w') as f:
+			f.write(str(value))
+	except OSError as e:
+		log('%s: %s' % (path, e))
+
+
+def screen_is_on():
+	return open(BL).read().strip() != '0'
+
+
+# reasons of the Lomiri Powerd plugin: 0 Unknown, 1 Inactivity, 2 PowerKey, 3 Proximity (on "off" Lomiri shows the lock
+# screen unless the reason is Proximity)
+INACTIVITY, POWERKEY, PROXIMITY = 1, 2, 3
+
+
+def power_state(on, reason=POWERKEY):
+	def emit():
+		bus.emit_signal(None, PATH, IFACE, 'DisplayPowerStateChange', GLib.Variant('(ii)', (1 if on else 0, reason)))
+		return False
+	GLib.idle_add(emit)
+
+
+def lock():
+	uid = subprocess.run(['id', '-u', USER], capture_output=True, text=True).stdout.strip()
+	env = 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus' % uid
+	subprocess.run(['su', USER, '-s', '/bin/sh', '-c', env + ' gdbus call --session -d org.gnome.ScreenSaver'
+			' -o /org/gnome/ScreenSaver -m org.gnome.ScreenSaver.Lock'],
+		stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+
+
+def screen_off(touch, reason=POWERKEY):
+	b = open(BL).read().strip()
+	if b != '0' and not idle['dimmed']:	# dimmed: SAVED still has the real level
+		write(SAVED, b)
+	lock()
+	time.sleep(0.3)	# let the lock screen draw before the backlight goes
+	write(BL, 0)
+	if touch:
+		write(touch + '/inhibited', 1)
+	idle['dimmed'] = False
+	idle['off_since'] = time.monotonic()
+	# v2: Lomiri stops drawing on "display off" and loaded / drew its lock screen only after the next "on" (an empty
+	# wallpaper for ~3 s, then the lock screen): the backlight is off now, Lomiri hears it once the lock screen is drawn
+	GLib.timeout_add(OFF_DELAY, lambda: (not screen_is_on() and power_state(False, reason)) and False)
+	log('screen off (brightness %s, reason %d)' % (b, reason))
+
+
+def saved_level():
+	try:
+		return open(SAVED).read().strip() or '180'
+	except OSError:
+		return '180'
+
+
+DARK_RESUME = '/sys/module/panel_samsung_s6e3hab_amb667an01/parameters/dark_resume'
+
+
+def end_dark_window():
+	# a Wi-Fi / mobile-data wake-up keeps the panel dark for dark_resume seconds (system-sleep/m52xq-wifi-dark.sh sets 40); the kernel
+	# of boot v232+ ends that window on a power / volume key, this one (#430) does not: the screen stayed black ("не просыпается")
+	# although the backlight was on (the power key was logged: "screen on (brightness 220)") until the window ran out
+	try:
+		if open(DARK_RESUME).read().strip() not in ('', '0'):
+			write(DARK_RESUME, 0)
+	except OSError:
+		pass
+
+
+def screen_on(touch, reason=POWERKEY):
+	end_dark_window()
+	if touch:
+		write(touch + '/inhibited', 0)
+	b = saved_level()
+	if idle.pop('dark', False):
+		# after a dark resume the panel pipeline was kept off by the driver while Lomiri still believed the display was on: the
+		# backlight came up on a black screen (no picture) because Lomiri sent no new frame. A real off/on (reason Proximity: no lock)
+		power_state(False, PROXIMITY)
+		time.sleep(0.4)
+	power_state(True, reason)
+	time.sleep(0.25)	# a fresh frame before the backlight, not the last one from before the screen went off
+	write(BL, b)
+	emit_brightness()
+	idle['last'] = time.monotonic()
+	idle['dimmed'] = False
+	idle['off_since'] = None
+	log('screen on (brightness %s)' % b)
+
+
+UINPUT = {'fd': None}
+
+
+def inject_long_power():
+	# the real key is grabbed (Lomiri must not see a short press); a long hold is replayed to Lomiri through uinput:
+	# press + auto-repeat for > powerKeyLongPressTime (2 s) -> its power dialog
+	if UINPUT['fd'] is None:
+		fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+		fcntl.ioctl(fd, 0x40045564, 1)	# UI_SET_EVBIT EV_KEY
+		fcntl.ioctl(fd, 0x40045565, 116)	# UI_SET_KEYBIT KEY_POWER
+		name = b'm52xq-power-long'.ljust(80, b'\0')
+		os.write(fd, name + struct.pack('HHHH', 3, 0x1209, 0x5252, 1) + struct.pack('I', 0) + b'\0' * (64 * 4 * 4))
+		fcntl.ioctl(fd, 0x5501)	# UI_DEV_CREATE
+		UINPUT['fd'] = fd
+		time.sleep(1.0)	# let Mir pick the new device up
+	fd = UINPUT['fd']
+
+	def ev(typ, code, val):
+		os.write(fd, struct.pack('llHHi', 0, 0, typ, code, val))
+	ev(1, 116, 1); ev(0, 0, 0)
+	end = time.monotonic() + 2.6
+	while time.monotonic() < end:
+		time.sleep(0.1)
+		ev(1, 116, 2); ev(0, 0, 0)
+	ev(1, 116, 0); ev(0, 0, 0)
+	log('power dialog requested (long hold)')
+
+
+def keys():
+	key = find('pmic_pwrkey')
+	dev = '/dev/input/' + os.path.basename(glob.glob(key + '/event*')[0])
+	log('%s, backlight %s' % (dev, BL))
+	fmt = 'llHHi'
+	size = struct.calcsize(fmt)
+	down = None
+	long_timer = {}
+	with open(dev, 'rb') as f:
+		# EVIOCGRAB: Lomiri (Mir evdev) must not see the power key, otherwise it pops up its power dialog on a short press
+		try:
+			fcntl.ioctl(f, 0x40044590, 1)
+		except OSError as e:
+			log('EVIOCGRAB failed: %s' % e)
+		while True:
+			sec, usec, typ, code, value = struct.unpack(fmt, f.read(size))
+			if typ != 1 or code != 116:	# EV_KEY, KEY_POWER
+				continue
+			t = sec + usec / 1e6
+			if value == 1:
+				down = t
+				long_timer['t'] = threading.Timer(1.5, lambda: threading.Thread(target=inject_long_power, daemon=True).start())
+				long_timer['t'].start()
+				long_timer['fired_at'] = time.monotonic() + 1.5
+			elif value == 0 and down is not None:
+				if long_timer.get('t'):
+					long_timer['t'].cancel()
+				held, down = t - down, None
+				if held >= SHORT:
+					continue
+				log('short power key (%.2f s), screen is %s' % (held, 'on' if screen_is_on() else 'off'))
+				end_dark_window()
+				touch = find(TOUCH)
+				# the press that woke the system: the resume has already turned the screen on
+				if time.monotonic() < idle['key_ignore'] and screen_is_on():
+					log('power key of the wake-up, screen stays on')
+					continue
+				if screen_is_on():
+					screen_off(touch)
+				else:
+					screen_on(touch)
+
+
+def reorient():
+	def emit():
+		# reason Proximity: Lomiri must not lock the screen for this off/on (it did on every rotation)
+		bus.emit_signal(None, PATH, IFACE, 'DisplayPowerStateChange', GLib.Variant('(ii)', (0, PROXIMITY)))
+		GLib.timeout_add(50, lambda: bus.emit_signal(None, PATH, IFACE, 'DisplayPowerStateChange',
+			GLib.Variant('(ii)', (1, PROXIMITY))) and False)
+		return False
+	GLib.idle_add(emit)
+
+
+REPOWERD, REPOWERD_PATH = 'com.lomiri.Repowerd', '/com/lomiri/Repowerd'
+REPOWERD_XML = """<node><interface name="com.lomiri.Repowerd">
+<property name="brightness" type="i" access="readwrite"/>
+<method name="requestSysState"><arg type="s" direction="in"/><arg type="i" direction="in"/><arg type="s" direction="out"/></method>
+<method name="clearSysState"><arg type="s" direction="in"/></method>
+<method name="requestWakeup"><arg type="s" direction="in"/><arg type="t" direction="in"/><arg type="s" direction="out"/></method>
+<method name="clearWakeup"><arg type="s" direction="in"/></method>
+<method name="enableProximityHandling"><arg type="s" direction="in"/></method>
+<method name="disableProximityHandling"><arg type="s" direction="in"/></method>
+<method name="registerClient"><arg type="s" direction="in"/></method>
+<method name="unregisterClient"><arg type="s" direction="in"/></method>
+<method name="ackStateChange"><arg type="i" direction="in"/></method>
+<method name="userAutobrightnessEnable"><arg type="b" direction="in"/></method>
+<method name="getBrightnessParams"><arg type="(iiiib)" direction="out"/></method>
+<method name="setUserBrightness"><arg type="i" direction="in"/></method>
+<method name="listSysRequests"><arg type="a(ssi)" direction="out"/></method>
+<method name="getSysRequestStats"><arg type="a(ssuttt)" direction="out"/></method>
+<signal name="SysPowerStateChange"><arg type="i"/></signal>
+<signal name="Wakeup"/>
+</interface></node>"""
+# the brightness itself is set by the indicator through com.canonical.Unity.Screen (repowerd's screen interface),
+# which had only its signal here ("Unable to call uscreen.setBrightness: Object does not exist")
+USCREEN_XML = """<node><interface name="com.canonical.Unity.Screen">
+<method name="setUserBrightness"><arg type="i" direction="in"/></method>
+<method name="userAutobrightnessEnable"><arg type="b" direction="in"/></method>
+<method name="setScreenPowerMode"><arg type="s" direction="in"/><arg type="i" direction="in"/><arg type="b" direction="out"/></method>
+<method name="keepDisplayOn"><arg type="i" direction="out"/></method>
+<method name="removeDisplayOnRequest"><arg type="i" direction="in"/></method>
+<method name="setInactivityTimeouts"><arg type="i" direction="in"/><arg type="i" direction="in"/></method>
+<method name="setTouchVisualizationEnabled"><arg type="b" direction="in"/></method>
+<method name="m52xqRefresh"/>
+<signal name="DisplayPowerStateChange"><arg type="i"/><arg type="i"/></signal>
+</interface></node>"""
+BR_MIN, BR_MAX, BR_DEFAULT = 5, 255, 180
+bright = {'user': BR_DEFAULT, 'auto': False, 'lux': None, 'llux': None, 'target': None, 'cookie': 0, 'user_t': 0.0}
+
+
+def saved_brightness():
+	try:
+		return int(open(SAVED).read().strip() or BR_DEFAULT)
+	except (OSError, ValueError):
+		return BR_DEFAULT
+
+
+def set_backlight(b):
+	b = max(BR_MIN, min(BR_MAX, int(b)))
+	write(SAVED, b)	# what screen_on() restores
+	if screen_is_on():
+		write(BL, b)
+		# not while the finger is on the slider: with auto brightness the level differs from the slider value
+		if time.monotonic() - bright['user_t'] > 3:
+			emit_brightness(b)
+
+
+def current_brightness():
+	try:
+		return max(BR_MIN, min(BR_MAX, int(saved_level())))
+	except ValueError:
+		return bright['user']
+
+
+# v2: the shade slider follows the Repowerd "brightness" property (notify::brightness of its proxy); without
+# PropertiesChanged it never got a value (the schema key only changes when the slider itself moves): always at the minimum
+def emit_brightness(b=None):
+	def emit():
+		bus.emit_signal(None, REPOWERD_PATH, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+			GLib.Variant('(sa{sv}as)', (REPOWERD, {'brightness': GLib.Variant('i', current_brightness() if b is None else b)}, [])))
+		return False
+	GLib.idle_add(emit)
+
+
+def auto_target():
+	# the user's level is the brightness at ~50 lux (a room), scaled with the log of the light
+	factor = 0.35 + 0.35 * bright['llux']	# 0 lux 0.35, 10 lux 0.71, 50 lux 0.95, 1000 lux 1.4, 10000 lux 1.75
+	return max(BR_MIN + 5, min(BR_MAX, bright['user'] * factor))
+
+
+# v2: the light under the OLED jumps from one reading to the next (1824 -> 18 lux) and the backlight followed every
+# second, it never stood still: log of the light averaged over ~5 s, a new target only when it is 10 % away from the
+# current one, and once there the backlight stays
+def auto_step(force=False):
+	if not bright['auto'] or bright['lux'] is None or not screen_is_on() or idle['dimmed']:
+		return True
+	l = math.log10(1 + max(0.0, bright['lux']))
+	bright['llux'] = l if bright['llux'] is None else bright['llux'] + 0.2 * (l - bright['llux'])
+	cand = auto_target()
+	t = bright['target']
+	if force or t is None or abs(cand - t) > max(8, 0.1 * t):
+		bright['target'] = t = cand
+	cur = int(open(BL).read().strip() or 0)
+	diff = t - cur
+	if abs(diff) >= 2:
+		set_backlight(cur + (diff if abs(diff) < 6 else diff * 0.25))
+	return True
+
+
+def claim_light():
+	try:
+		bus.call_sync('net.hadess.SensorProxy', '/net/hadess/SensorProxy', 'net.hadess.SensorProxy',
+			'ClaimLight' if bright['auto'] else 'ReleaseLight', None, None, Gio.DBusCallFlags.NONE, 5000, None)
+		log('light sensor ' + ('claimed' if bright['auto'] else 'released'))
+		if bright['auto']:	# v2: the level now, not only from the next PropertiesChanged
+			v = bus.call_sync('net.hadess.SensorProxy', '/net/hadess/SensorProxy', 'org.freedesktop.DBus.Properties',
+				'Get', GLib.Variant('(ss)', ('net.hadess.SensorProxy', 'LightLevel')), None, Gio.DBusCallFlags.NONE,
+				2000, None)
+			bright['lux'] = v.unpack()[0]
+	except GLib.Error as e:
+		log('Claim/ReleaseLight: ' + e.message)
+
+
+def repowerd_call(conn, sender, path, iface, method, params, inv):
+	if method in ('setUserBrightness', 'userAutobrightnessEnable'):
+		log('%s %s' % (method, params.unpack()[0]))
+	elif method not in ('getBrightnessParams', 'listSysRequests', 'getSysRequestStats'):
+		log('%s%s from %s' % (method, params.unpack() if params else '()', sender))
+	if method == 'getBrightnessParams':
+		inv.return_value(GLib.Variant('((iiiib))', ((10, BR_MIN, BR_MAX, BR_DEFAULT, True),)))
+		GLib.timeout_add(500, lambda: emit_brightness() and False)	# the indicator restores its key, then gets the real level
+	elif method == 'setUserBrightness':
+		bright['user'] = max(BR_MIN, min(BR_MAX, params.unpack()[0]))
+		bright['user_t'] = time.monotonic()
+		if bright['auto']:
+			auto_step(True)
+		else:
+			set_backlight(bright['user'])
+		inv.return_value(None)
+	elif method == 'userAutobrightnessEnable':
+		bright['auto'] = bool(params.unpack()[0])
+		log('autobrightness ' + ('on' if bright['auto'] else 'off'))
+		claim_light()
+		if not bright['auto']:
+			set_backlight(bright['user'])
+		inv.return_value(None)
+	elif method == 'keepDisplayOn':
+		bright['cookie'] += 1
+		idle['keep'][bright['cookie']] = sender
+		GLib.idle_add(activity)	# like repowerd: the request turns a dimmed screen back to full
+		inv.return_value(GLib.Variant('(i)', (bright['cookie'],)))
+	elif method == 'm52xqRefresh':	# test: display off/on to Lomiri (reason Proximity: no lock) makes it lay the windows out again
+		reorient()
+		inv.return_value(None)
+	elif method == 'removeDisplayOnRequest':
+		idle['keep'].pop(params.unpack()[0], None)
+		idle['last'] = time.monotonic()	# the inactivity timeout starts now
+		inv.return_value(None)
+	elif method == 'setInactivityTimeouts':
+		off_t, dim_t = params.unpack()
+		if off_t >= 0:
+			idle['off_t'] = off_t
+		if dim_t >= 0:
+			idle['dim_t'] = dim_t
+		inv.return_value(None)
+	elif method == 'setScreenPowerMode':
+		mode, reason = params.unpack()
+		log('Lomiri: setScreenPowerMode %s (reason %s), screen is %s' % (mode, reason, 'on' if screen_is_on() else 'off'))
+		touch = find(TOUCH)
+		if mode == 'on' and not screen_is_on():
+			threading.Thread(target=screen_on, args=(touch, reason), daemon=True).start()
+		elif mode == 'off' and screen_is_on():
+			threading.Thread(target=screen_off, args=(touch, reason), daemon=True).start()
+		inv.return_value(GLib.Variant('(b)', (True,)))
+	elif method == 'requestSysState':
+		bright['cookie'] += 1
+		cookie = 'm52xq-%d' % bright['cookie']
+		idle['sys'][cookie] = (sender, params.unpack()[0])
+		inv.return_value(GLib.Variant('(s)', (cookie,)))
+	elif method == 'clearSysState':
+		idle['sys'].pop(params.unpack()[0], None)
+		inv.return_value(None)
+	elif method == 'requestWakeup':
+		bright['cookie'] += 1
+		inv.return_value(GLib.Variant('(s)', ('m52xq-%d' % bright['cookie'],)))
+	elif method == 'listSysRequests':
+		inv.return_value(GLib.Variant('(a(ssi))', ([(n, s, 1) for s, n in idle['sys'].values()],)))
+	elif method == 'getSysRequestStats':
+		inv.return_value(GLib.Variant('(a(ssuttt))', ([],)))
+	else:
+		inv.return_value(None)
+
+
+def repowerd_get(conn, sender, path, iface, prop):
+	return GLib.Variant('i', current_brightness())
+
+
+def repowerd_set(conn, sender, path, iface, prop, value):
+	bright['user'] = max(BR_MIN, min(BR_MAX, value.unpack()))
+	set_backlight(bright['user'])
+	return True
+
+
+def repowerd():
+	bright['user'] = saved_brightness()
+	node = Gio.DBusNodeInfo.new_for_xml(REPOWERD_XML)
+	bus.register_object(REPOWERD_PATH, node.interfaces[0], repowerd_call, repowerd_get, repowerd_set)
+	uscreen = Gio.DBusNodeInfo.new_for_xml(USCREEN_XML)
+	bus.register_object(PATH, uscreen.interfaces[0], repowerd_call, None, None)
+	Gio.bus_own_name_on_connection(bus, REPOWERD, Gio.BusNameOwnerFlags.NONE,
+		lambda c, n: log('owns ' + n), lambda c, n: log('lost ' + n))
+	GLib.timeout_add_seconds(1, auto_step)
+
+
+def watch_orientation():
+	proxy = 'net.hadess.SensorProxy'
+	last = [None]
+
+	def changed(conn, sender, path, iface, signal, params):
+		props = params.unpack()[1]
+		if 'LightLevel' in props:
+			bright['lux'] = props['LightLevel']
+		o = props.get('AccelerometerOrientation')
+		if o and o != last[0]:
+			last[0] = o
+			if screen_is_on():
+				reorient()
+				log('orientation ' + o)
+
+	# v3: claim only once the proxy has found the accelerometer: a claim that comes in right when the proxy appears (before
+	# its SSC accelerometer is probed) is counted but never enables the sensor, and every later claim (Lomiri,
+	# monitor-sensor) then sees the count above 0: the orientation stayed "undefined" (v2 boot, 25.10)
+	def has_accel():
+		try:
+			v = bus.call_sync(proxy, '/net/hadess/SensorProxy', 'org.freedesktop.DBus.Properties', 'Get',
+				GLib.Variant('(ss)', (proxy, 'HasAccelerometer')), None, Gio.DBusCallFlags.NONE, 2000, None)
+			return v.unpack()[0]
+		except GLib.Error:
+			return False
+
+	def claim(*_):
+		tries = [0]
+
+		def attempt():
+			tries[0] += 1
+			if not has_accel():
+				return tries[0] < 120	# keep trying every 0.5 s for a minute
+			try:
+				bus.call_sync(proxy, '/net/hadess/SensorProxy', proxy, 'ClaimAccelerometer', None, None,
+					Gio.DBusCallFlags.NONE, 5000, None)
+				log('accelerometer claimed')
+			except GLib.Error as e:
+				log('ClaimAccelerometer: ' + e.message)
+			return False
+		GLib.timeout_add(500, attempt)
+	bus.signal_subscribe(proxy, 'org.freedesktop.DBus.Properties', 'PropertiesChanged', '/net/hadess/SensorProxy',
+		None, Gio.DBusSignalFlags.NONE, changed)
+	# claim again whenever iio-sensor-proxy (re)starts
+	Gio.bus_watch_name_on_connection(bus, proxy, Gio.BusNameWatcherFlags.NONE, claim, None)
+
+
+def activity():
+	idle['last'] = time.monotonic()
+	if idle['dimmed'] and screen_is_on():
+		idle['dimmed'] = False
+		write(BL, saved_level())
+	return False
+
+
+def watch_activity():
+	# the touchscreen (inhibited while the screen is off) and the volume keys; the power key is keys()
+	def reader(name):
+		while True:
+			d = find(name)
+			ev = glob.glob(d + '/event*') if d else []
+			if not ev:
+				time.sleep(5)
+				continue
+			try:
+				with open('/dev/input/' + os.path.basename(ev[0]), 'rb') as f:
+					log('activity from %s' % name)
+					last = 0.0
+					while f.read(24):
+						t = time.monotonic()
+						if t - last > 1:	# one wake of the main loop per second is enough
+							last = t
+							GLib.idle_add(activity)
+			except OSError as e:
+				log('%s: %s' % (name, e))
+				time.sleep(5)
+	for name in (TOUCH, 'gpio-keys'):
+		threading.Thread(target=reader, args=(name,), daemon=True).start()
+
+
+def read_timeouts():
+	# com.lomiri.touch.system of the user (lomiri-system-settings / the shade write it); only a change overrides
+	# setInactivityTimeouts; v2: auto-brightness too (after a restart of this service it was off until toggled in the shade)
+	env = 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus'
+	cmd = '; '.join('%s gsettings get com.lomiri.touch.system %s' % (env, k)
+		for k in ('activity-timeout', 'dim-timeout', 'auto-brightness'))
+	try:
+		out = subprocess.run(['su', USER, '-s', '/bin/sh', '-c', cmd], capture_output=True, text=True,
+			timeout=10).stdout.split()
+	except (subprocess.SubprocessError, OSError):
+		return True
+	gs = tuple(int(v) for v in out if v.isdigit())
+	if len(gs) == 2 and gs != idle['gs']:
+		idle['gs'] = gs
+		idle['off_t'], idle['dim_t'] = gs
+		log('inactivity: screen off after %d s, dim after %d s (0 = never)' % gs)
+	if out and out[-1] in ('true', 'false') and (out[-1] == 'true') != idle.get('auto_gs'):
+		idle['auto_gs'] = out[-1] == 'true'
+		if idle['auto_gs'] != bright['auto']:
+			bright['auto'] = idle['auto_gs']
+			log('autobrightness %s (settings)' % ('on' if bright['auto'] else 'off'))
+			claim_light()
+			if not bright['auto']:
+				set_backlight(bright['user'])
+	return True
+
+
+def in_call():
+	try:
+		v = bus.call_sync('org.freedesktop.ModemManager1', '/org/freedesktop/ModemManager1',
+			'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects', None, None, Gio.DBusCallFlags.NONE, 3000, None)
+	except GLib.Error:
+		return False
+	for path, ifaces in v.unpack()[0].items():
+		call = ifaces.get('org.freedesktop.ModemManager1.Call')
+		if call and call.get('State') not in (None, 7):	# 7 = terminated
+			return True
+	return False
+
+
+def sound_running():
+	for f in glob.glob('/proc/asound/card*/pcm*/sub*/status'):
+		try:
+			if 'RUNNING' in open(f).read():
+				return True
+		except OSError:
+			pass
+	return False
+
+
+def on_charger():
+	# like PowerDevil's "on AC power" profile (the Plasma image did not sleep while the USB cable was in): no automatic suspend
+	# while any mains / USB source is online; the screen still goes off by the timeouts, the power key still works
+	for d in glob.glob('/sys/class/power_supply/*'):
+		try:
+			if open(d + '/type').read().strip() in ('Mains', 'USB', 'USB_PD', 'USB_DCP', 'USB_CDP', 'USB_ACA') \
+					and open(d + '/online').read().strip() == '1':
+				return os.path.basename(d)
+		except OSError:
+			pass
+	return None
+
+
+def why_awake():
+	c = on_charger()
+	if c:
+		return 'charger ' + c
+	if idle['sys']:
+		return 'requestSysState ' + ','.join(n for s, n in idle['sys'].values())
+	if in_call():
+		return 'call'
+	if sound_running():
+		return 'sound'
+	return None
+
+
+def suspend():
+	r = subprocess.run(['systemctl', 'suspend'], capture_output=True, text=True)
+	log('systemctl suspend: %s' % ('ok' if r.returncode == 0 else r.stderr.strip()))
+
+
+def tick():
+	now = time.monotonic()
+	if screen_is_on():
+		if idle['off_since'] is not None:	# on again by someone else (end of a call: proximity script)
+			idle['off_since'] = None
+			idle['last'] = now
+		t = now - idle['last']
+		dim_due = idle['dim_t'] and not idle['dimmed'] and t >= idle['dim_t']
+		off_due = idle['off_t'] and t >= idle['off_t']
+		if not (dim_due or off_due) or idle['keep'] or in_call():
+			return True
+		if dim_due and (not idle['off_t'] or idle['dim_t'] < idle['off_t']):
+			idle['dimmed'] = True
+			write(BL, max(BR_MIN, int(int(saved_level()) * DIM_LEVEL)))
+			log('dimmed after %d s' % t)
+		if off_due:
+			log('no activity for %d s' % t)
+			threading.Thread(target=screen_off, args=(find(TOUCH), INACTIVITY), daemon=True).start()
+			idle['off_since'] = now	# the thread sets it again; no second start meanwhile
+		return True
+	if idle['off_since'] is None:
+		idle['off_since'] = now	# off by someone else (call proximity, start)
+	if now - idle['off_since'] < SLEEP_AFTER or now - idle['resumed'] < RESUME_GRACE or now < idle['next_try']:
+		return True
+	why = why_awake()
+	idle['next_try'] = now + (15 if why else 60)	# a failed / inhibited suspend: try again in a minute
+	if why:
+		log('screen off, stays awake: ' + why)
+		return True
+	log('screen off for %d s, suspending' % (now - idle['off_since']))
+	threading.Thread(target=suspend, daemon=True).start()
+	return True
+
+
+def prepare_for_sleep(conn, sender, path, iface, signal, params):
+	if params.unpack()[0]:
+		log('going to sleep')
+		return
+	now = time.monotonic()
+	idle['resumed'] = now
+	idle['next_try'] = 0.0
+	irq = open('/sys/power/pm_wakeup_irq').read().strip() if os.path.exists('/sys/power/pm_wakeup_irq') else ''
+	dark = set()
+	for line in open('/proc/interrupts'):
+		f = line.split()
+		if f and f[-1] in ('ce2', 'ipa'):
+			dark.add(f[0].rstrip(':'))
+	if irq in dark:
+		log('resumed by irq %s (Wi-Fi / mobile data): screen stays off' % irq)
+		idle['dark'] = True
+		return
+	log('resumed by irq %s: screen on' % (irq or '?'))
+	idle['key_ignore'] = now + 2	# the power key event of this wake-up comes right after
+	if not screen_is_on():
+		threading.Thread(target=screen_on, args=(find(TOUCH),), daemon=True).start()
+
+
+def name_gone(conn, sender, path, iface, signal, params):
+	name, old, new = params.unpack()
+	if new or not name.startswith(':'):
+		return
+	for c in [c for c, s in idle['keep'].items() if s == name]:
+		del idle['keep'][c]
+		log('keepDisplayOn %d dropped (%s gone)' % (c, name))
+	for c in [c for c, (s, n) in idle['sys'].items() if s == name]:
+		del idle['sys'][c]
+		log('requestSysState %s dropped (%s gone)' % (c, name))
+
+
+def heartbeat():
+	if screen_is_on():
+		power_state(True, PROXIMITY)
+	return True
+
+
+def main():
+	global bus
+	bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+	Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.NONE,
+		lambda c, n: (log('owns ' + n), heartbeat()), lambda c, n: log('lost ' + n))
+	GLib.timeout_add_seconds(15, heartbeat)
+	watch_orientation()
+	repowerd()
+	threading.Thread(target=keys, daemon=True).start()
+	watch_activity()
+	read_timeouts()
+	GLib.timeout_add_seconds(60, read_timeouts)
+	bus.signal_subscribe('org.freedesktop.login1', 'org.freedesktop.login1.Manager', 'PrepareForSleep',
+		'/org/freedesktop/login1', None, Gio.DBusSignalFlags.NONE, prepare_for_sleep)
+	bus.signal_subscribe('org.freedesktop.DBus', 'org.freedesktop.DBus', 'NameOwnerChanged', '/org/freedesktop/DBus',
+		None, Gio.DBusSignalFlags.NONE, name_gone)
+	GLib.timeout_add_seconds(1, tick)
+	GLib.MainLoop().run()
+
+
+main()

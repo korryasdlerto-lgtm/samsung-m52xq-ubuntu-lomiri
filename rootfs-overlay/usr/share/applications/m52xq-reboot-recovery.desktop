@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Reboot menu
+Comment=Reboot, reboot into TWRP, power off
+Icon=/usr/share/icons/hicolor/scalable/actions/system-restart.svg
+Exec=/usr/local/bin/m52xq-app-env /usr/local/bin/m52xq-reboot-recovery
+Terminal=false
+Categories=System;
+Keywords=recovery;twrp;reboot;poweroff;shutdown;

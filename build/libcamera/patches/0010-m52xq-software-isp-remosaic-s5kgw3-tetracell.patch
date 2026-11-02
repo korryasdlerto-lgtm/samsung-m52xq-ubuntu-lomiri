@@ -1,0 +1,158 @@
+diff -ruN a/include/libcamera/internal/software_isp/software_isp.h b/include/libcamera/internal/software_isp/software_isp.h
+--- a/include/libcamera/internal/software_isp/software_isp.h	2026-07-10 13:12:38.000000000 +0300
++++ b/include/libcamera/internal/software_isp/software_isp.h	2026-10-26 00:48:18.329808734 +0200
+@@ -94,7 +94,13 @@
+ 	void statsReady(uint32_t frame, uint32_t bufferId);
+ 	void inputReady(FrameBuffer *input);
+ 	void outputReady(FrameBuffer *output);
++	void remosaicTetracell(FrameBuffer *input);
+ 	std::unique_ptr<Debayer> debayer_;
++	/* m52xq: S5KGW3 full 9248x6936 frame is a raw 4-cell array */
++	bool tetracellSensor_ = false;
++	bool remosaic_ = false;
++	Size remosaicSize_;
++	unsigned int remosaicStride_ = 0;
+ 	Thread ispWorkerThread_;
+ 	SharedMemObject<DebayerParams> sharedParams_;
+ 	DebayerParams debayerParams_;
+diff -ruN a/src/libcamera/software_isp/software_isp.cpp b/src/libcamera/software_isp/software_isp.cpp
+--- a/src/libcamera/software_isp/software_isp.cpp	2026-10-17 17:29:31.466593693 +0300
++++ b/src/libcamera/software_isp/software_isp.cpp	2026-10-26 00:48:18.329808734 +0200
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "libcamera/internal/software_isp/software_isp.h"
++#include "libcamera/internal/mapped_framebuffer.h"
+ 
+ #include <memory>
+ #include <optional>
+@@ -100,6 +101,13 @@
+ 
+ 	const CameraManager &cm = *pipe->cameraManager();
+ 	const bool quadBayer = softwareIspNeedsCellCollapse(sensor->model());
++	/*
++	 * m52xq: the full 9248x6936 frame of the Samsung S5KGW3 is a raw 4-cell (Tetracell) array: 2x2 blocks of one
++	 * colour (Gr Gr R R / Gr Gr R R / B B Gb Gb / B B Gb Gb) although the sensor reports GRBG. Debayered as plain
++	 * Bayer it gave a colour-tile grid and red / blue swapped (64 MP and 16 MP photos, which libcamera takes from
++	 * that mode). It is re-mosaiced in place below (as Megapixels does) before the statistics and the debayer.
++	 */
++	tetracellSensor_ = sensor->model() == "s5kgw3";
+ 
+ 	auto stats = std::make_unique<SwStatsCpu>(cm, quadBayer);
+ 	if (!stats->isValid()) {
+@@ -310,6 +318,17 @@
+ 		<< "-" << BayerFormat::fromPixelFormat(inputCfg.pixelFormat)
+ 		<< " stride " << inputCfg.stride;
+ 
++	{
++		const BayerFormat bayer = BayerFormat::fromPixelFormat(inputCfg.pixelFormat);
++		remosaic_ = tetracellSensor_ && inputCfg.size.width >= 9000 &&
++			    inputCfg.size.width % 4 == 0 && inputCfg.size.height % 4 == 0 &&
++			    bayer.bitDepth == 10 && bayer.packing == BayerFormat::Packing::CSI2;
++		remosaicSize_ = inputCfg.size;
++		remosaicStride_ = inputCfg.stride;
++		if (remosaic_)
++			LOG(SoftwareIsp, Info) << "m52xq: re-mosaicing the 4-cell input " << inputCfg.size;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -433,8 +452,97 @@
+  * \param[in] input The input framebuffer
+  * \param[out] output The framebuffer to write the processed frame to
+  */
++/*
++ * m52xq: 4-cell -> Bayer by moving pixels within each 4x4 block (no interpolation), with the 16 positions of the block
++ * first scaled to the mean of their colour (the pixels of a cell differ slightly in sensitivity: a fine dot grid
++ * otherwise). Port of remosaic_tetracell_raw10() of our Megapixels (r64/r68), done in place on the RAW10 input.
++ */
++void SoftwareIsp::remosaicTetracell(FrameBuffer *input)
++{
++	/* target (GRBG) <- source position in the 4x4 block */
++	static const uint8_t src[4][4][2] = {
++		{ { 0, 0 }, { 0, 2 }, { 0, 1 }, { 0, 3 } },	/* G R G R */
++		{ { 2, 0 }, { 1, 1 }, { 2, 1 }, { 2, 3 } },	/* B G B G */
++		{ { 1, 0 }, { 1, 2 }, { 2, 2 }, { 1, 3 } },	/* G R G R */
++		{ { 3, 0 }, { 3, 2 }, { 3, 1 }, { 3, 3 } },	/* B G B G */
++	};
++	static const int posColour[4][4] = { { 1, 1, 0, 0 }, { 1, 1, 0, 0 }, { 2, 2, 1, 1 }, { 2, 2, 1, 1 } };
++
++	MappedFrameBuffer map(input, MappedFrameBuffer::MapFlag::ReadWrite);
++	if (!map.isValid() || map.planes().empty()) {
++		LOG(SoftwareIsp, Error) << "m52xq: cannot map the 4-cell input";
++		return;
++	}
++	uint8_t *image = map.planes()[0].data();
++	const unsigned int width = remosaicSize_.width, height = remosaicSize_.height;
++	const size_t line = remosaicStride_;
++	if (map.planes()[0].size() < line * height)
++		return;
++
++	double sum[4][4] = {}, cnt[4][4] = {};
++	for (unsigned int y = 0; y + 4 <= height; y += 32) {
++		for (unsigned int gx = 0; gx < width / 4; gx += 8) {
++			for (int r = 0; r < 4; r++) {
++				const uint8_t *p = image + (size_t)(y + r) * line + (size_t)gx * 5;
++				for (int c = 0; c < 4; c++) {
++					int v = ((int)p[c] << 2) | ((p[4] >> (2 * c)) & 3);
++					if (v > 80 && v < 960) {
++						sum[r][c] += v - 64;
++						cnt[r][c] += 1;
++					}
++				}
++			}
++		}
++	}
++	double csum[3] = {}, ccnt[3] = {};
++	for (int r = 0; r < 4; r++)
++		for (int c = 0; c < 4; c++) {
++			csum[posColour[r][c]] += sum[r][c];
++			ccnt[posColour[r][c]] += cnt[r][c];
++		}
++	float gain[4][4];
++	for (int r = 0; r < 4; r++)
++		for (int c = 0; c < 4; c++) {
++			int k = posColour[r][c];
++			double m = cnt[r][c] > 100 ? sum[r][c] / cnt[r][c] : 0;
++			double cm = ccnt[k] > 100 ? csum[k] / ccnt[k] : 0;
++			gain[r][c] = (m > 1 && cm > 1) ? static_cast<float>(cm / m) : 1.0f;
++			if (gain[r][c] < 0.8f || gain[r][c] > 1.25f)
++				gain[r][c] = 1.0f;
++		}
++
++	for (unsigned int y = 0; y + 4 <= height; y += 4) {
++		for (unsigned int gx = 0; gx < width / 4; gx++) {
++			uint16_t s[4][4];
++			for (int r = 0; r < 4; r++) {
++				const uint8_t *p = image + (size_t)(y + r) * line + (size_t)gx * 5;
++				for (int c = 0; c < 4; c++) {
++					int v = ((int)p[c] << 2) | ((p[4] >> (2 * c)) & 3);
++					if (v > 64 && v < 1023) {
++						v = 64 + static_cast<int>((v - 64) * gain[r][c] + 0.5f);
++						v = v > 1023 ? 1023 : v;
++					}
++					s[r][c] = static_cast<uint16_t>(v);
++				}
++			}
++			for (int r = 0; r < 4; r++) {
++				uint8_t *q = image + (size_t)(y + r) * line + (size_t)gx * 5;
++				uint8_t low = 0;
++				for (int c = 0; c < 4; c++) {
++					uint16_t v = s[src[r][c][0]][src[r][c][1]];
++					q[c] = v >> 2;
++					low |= (v & 3) << (2 * c);
++				}
++				q[4] = low;
++			}
++		}
++	}
++}
++
+ void SoftwareIsp::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output)
+ {
++	if (remosaic_)
++		remosaicTetracell(input);
+ 	ipa_->computeParams(frame);
+ 	debayer_->invokeMethod(&Debayer::process,
+ 			       ConnectionTypeQueued, frame, input, output, debayerParams_);

@@ -1,0 +1,20 @@
+{
+    "icon": "network-cellular-3g",
+    "name": "Cellular",
+    "translations": "lomiri-system-settings",
+    "category": "network",
+    "priority": 3,
+    "keywords": [
+        "cellular",
+        "mobile",
+        "data",
+        "internet",
+        "sim",
+        "roaming",
+        "apn",
+        "network"
+    ],
+    "has-dynamic-keywords": false,
+    "has-dynamic-visibility": false,
+    "plugin": "cellular-plugin"
+}

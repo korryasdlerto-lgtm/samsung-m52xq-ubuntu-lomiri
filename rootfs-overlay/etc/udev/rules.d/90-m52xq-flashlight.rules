@@ -1,0 +1,3 @@
+# M52XQ: переключатель фонарика в шторке (ayatana-indicator-power, работает от пользователя) пишет в /sys/class/leds/white:flash/brightness
+# (путь вшит в сервис по умолчанию); файл принадлежал root:root 644 → "Permission denied". Даём запись группе video.
+SUBSYSTEM=="leds", KERNEL=="white:flash", RUN+="/bin/chgrp video /sys%p/brightness", RUN+="/bin/chmod 664 /sys%p/brightness"

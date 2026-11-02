@@ -1,0 +1,9 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=M52XQ: copy launcher entries of click apps to the directory Lomiri reads
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/m52xq-click-desktops
+
+[Install]
+WantedBy=multi-user.target

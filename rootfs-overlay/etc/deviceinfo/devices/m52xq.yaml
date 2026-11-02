@@ -1,0 +1,13 @@
+m52xq:
+  Names:
+    - Samsung M52XQ PROJECT (board-id,05)
+  PrettyName: Samsung Galaxy M52 5G
+  DeviceType: phone
+  GridUnit: 21
+  WebkitDpr: 2
+  PrimaryOrientation: Portrait
+  SupportedOrientations:
+    - Portrait
+    - InvertedPortrait
+    - Landscape
+    - InvertedLandscape

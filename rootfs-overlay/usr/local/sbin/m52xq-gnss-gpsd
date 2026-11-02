@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+# M52XQ (убунтутач24/003, Lomiri): GPS for lomiri-location-service (Settings > Security > Location, the location
+# indicator, apps through the Lomiri Qt position plugin). Its default provider is the Android GPS HAL (none on a
+# mainline kernel) and its geoclue provider speaks GeoClue 1, so it found no source ("Не обнаружено"). Our GNSS is the
+# modem engine in ModemManager (m52xq-gps on/off, NMEA): this bridge runs gpsd on a pseudo terminal and writes the
+# NMEA of ModemManager into it every second while lomiri-location-service is "active" (a client wants positions);
+# the service uses gpsd::Provider (localhost:2947). The engine is switched on then and off again 30 s after the last
+# request, only if it was off before (GeoClue apps such as Organic Maps switch it themselves).
+import os, subprocess, time, tty
+from gi.repository import Gio, GLib
+
+LLS = 'com.lomiri.location.Service'
+MM = 'org.freedesktop.ModemManager1'
+LOC = MM + '.Modem.Location'
+NMEA_SOURCE = 4		# MM_MODEM_LOCATION_SOURCE_GPS_NMEA
+IDLE_OFF = 30		# s
+bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+
+
+def log(msg):
+	print('m52xq-gnss-gpsd: ' + msg, flush=True)
+
+
+def lls_state():
+	try:
+		v = bus.call_sync(LLS, '/com/lomiri/location/Service', 'org.freedesktop.DBus.Properties', 'Get',
+			GLib.Variant('(ss)', (LLS, 'State')), None, Gio.DBusCallFlags.NONE, 2000, None)
+		return v.unpack()[0]
+	except GLib.Error:
+		return ''
+
+
+def gnss_modem():
+	try:
+		objs = bus.call_sync(MM, '/org/freedesktop/ModemManager1', 'org.freedesktop.DBus.ObjectManager',
+			'GetManagedObjects', None, None, Gio.DBusCallFlags.NONE, 3000, None).unpack()[0]
+	except GLib.Error:
+		return None
+	for path, ifaces in objs.items():
+		if LOC in ifaces and ifaces[LOC].get('Capabilities', 0) & NMEA_SOURCE:
+			return path
+	return None
+
+
+def nmea(path):
+	try:
+		loc = bus.call_sync(MM, path, LOC, 'GetLocation', None, None, Gio.DBusCallFlags.NONE, 3000, None).unpack()[0]
+	except GLib.Error:
+		return ''
+	return loc.get(NMEA_SOURCE, '') or ''
+
+
+def gps(cmd):
+	return subprocess.run(['/usr/local/bin/m52xq-gps', cmd], capture_output=True, text=True, timeout=30).stdout.strip()
+
+
+def main():
+	master, slave = os.openpty()
+	tty.setraw(slave)
+	pts = os.ttyname(slave)
+	gpsd = subprocess.Popen(['gpsd', '-N', '-n', '-b', pts])
+	log('gpsd on %s (pid %d)' % (pts, gpsd.pid))
+	ours, last_active, modem = False, 0.0, None
+	while True:
+		if gpsd.poll() is not None:
+			log('gpsd exited, restarting')
+			gpsd = subprocess.Popen(['gpsd', '-N', '-n', '-b', pts])
+		now = time.monotonic()
+		if lls_state() == 'active':
+			last_active = now
+			if not ours and gps('status') != 'on':
+				ours = gps('on') == 'on'
+				log('GNSS engine on' if ours else 'GNSS engine did not start')
+			modem = modem or gnss_modem()
+			text = nmea(modem) if modem else ''
+			if not text:
+				modem = None
+			else:
+				os.write(master, (text.replace('\r\n', '\n').strip() + '\n').replace('\n', '\r\n').encode())
+		elif ours and now - last_active > IDLE_OFF:
+			gps('off')
+			ours = False
+			log('GNSS engine off (no request for %d s)' % IDLE_OFF)
+		time.sleep(1)
+
+
+main()

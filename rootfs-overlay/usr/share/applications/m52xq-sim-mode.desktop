@@ -1,0 +1,12 @@
+[Desktop Entry]
+# m52xq (убунтутач24/003 v3): absolute Icon (Lomiri does not find network-mobile by name)
+Type=Application
+Name=SIM cards manager
+Name[ru]=Менеджер SIM-карт
+Comment=Both SIM cards active, or only one of them
+Comment[ru]=Обе SIM-карты активны или только одна из них
+Icon=/usr/share/icons/suru/devices/scalable/simcard.svg
+Exec=/usr/local/bin/m52xq-sim-mode-menu
+Terminal=false
+Categories=System;Settings;
+Keywords=sim;dual;dsds;modem;сим;

@@ -1,0 +1,12 @@
+--- a/CameraApp/advancedcamerasettings.cpp
++++ b/CameraApp/advancedcamerasettings.cpp
+@@ -476,7 +476,8 @@
+ 
+             // m52xq: no sizes from libcamerasrc (see imageSupportedResolutions)
+             if (sizes.isEmpty()) {
+-                sizes << QSize(1280, 720) << QSize(1920, 1080);
++                // m52xq: 4K too, both cameras (Venus hardware encoder through m52xqvenc, 4K 28 fps from the camera)
++                sizes << QSize(1280, 720) << QSize(1920, 1080) << QSize(3840, 2160);
+             }
+ 
+             Q_FOREACH(QSize size, sizes) {

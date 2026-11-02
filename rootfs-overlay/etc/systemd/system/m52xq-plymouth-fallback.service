@@ -1,0 +1,8 @@
+[Unit]
+Description=M52XQ: fallback — quit Plymouth if greeter did not
+After=plymouth-start.service
+[Service]
+Type=simple
+ExecStart=/bin/sh -c "sleep 40; /usr/bin/plymouth quit --retain-splash"
+[Install]
+WantedBy=multi-user.target

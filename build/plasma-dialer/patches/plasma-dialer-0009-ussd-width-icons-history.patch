@@ -1,0 +1,121 @@
+--- a/plasma-dialer/src/qml/call/AnswerButtons.qml
++++ b/plasma-dialer/src/qml/call/AnswerButtons.qml
+@@ -41,7 +41,7 @@
+                     id: endCallIcon
+ 
+                     anchors.centerIn: parent
+-                    source: "call-end-symbolic"
++                    source: "call-stop-symbolic"
+ 
+                     SequentialAnimation {
+                         running: true
+--- a/plasma-dialer/src/qml/call/AsymmetricAnswerSwipe.qml
++++ b/plasma-dialer/src/qml/call/AsymmetricAnswerSwipe.qml
+@@ -46,7 +46,7 @@
+                     anchors.verticalCenter: parent.verticalCenter
+                     anchors.right: parent.right
+                     anchors.rightMargin: Kirigami.Units.largeSpacing * 2
+-                    source: "call-end-symbolic"
++                    source: "call-stop-symbolic"
+ 
+                     SequentialAnimation {
+                         running: true
+--- a/plasma-dialer/src/qml/history/HistoryDelegate.qml
++++ b/plasma-dialer/src/qml/history/HistoryDelegate.qml
+@@ -6,6 +6,7 @@
+ import QtQuick.Controls as Controls
+ import org.kde.kirigami as Kirigami
+ import org.kde.telephony
++import org.kde.people as KPeople
+ 
+ Controls.ItemDelegate {
+     id: root
+@@ -13,6 +14,36 @@
+     highlighted: false
+     onClicked: applicationWindow().call(model.communicationWith)
+ 
++    // m52xq: which SIM the call went over. History.account is the ICCID of the SIM, /run/m52xq-sim-slots (m52xq-sim-slots.service)
++    // maps the ICCIDs of the inserted SIMs to their slot ("ICCID N" per line); needs QML_XHR_ALLOW_FILE_READ=1 in the launcher
++    // the name of the contact (KPeople) of the number, shown above the number
++    property string contactUri: ContactUtils.phoneNumberToContactUri(model.communicationWith)
++    KPeople.PersonData {
++        id: personData
++        personUri: root.contactUri
++    }
++    readonly property string contactName: root.contactUri !== "" ? String(personData.person.name || "") : ""
++
++    property string simSlot: {
++        const acc = String(model.account || "");
++        if (!acc)
++            return "";
++        const xhr = new XMLHttpRequest();
++        xhr.open("GET", "file:///run/m52xq-sim-slots", false);
++        try {
++            xhr.send();
++        } catch (e) {
++            return "";
++        }
++        const lines = (xhr.responseText || "").split("\n");
++        for (let i = 0; i < lines.length; ++i) {
++            const f = lines[i].trim().split(" ");
++            if (f.length === 2 && f[0] === acc)
++                return f[1];
++        }
++        return "";
++    }
++
+     contentItem: RowLayout {
+         Kirigami.Icon {
+             width: Kirigami.Units.iconSizes.medium
+@@ -41,7 +72,7 @@
+             Controls.Label {
+                 id: callContactDisplayLabel
+ 
+-                text: model.communicationWith
++                text: root.contactName !== "" ? root.contactName : model.communicationWith
+                 Layout.fillWidth: true
+             }
+ 
+@@ -60,7 +91,7 @@
+ 
+             Controls.Label {
+                 Layout.alignment: Qt.AlignRight
+-                text: Qt.formatDateTime(model.startedAt, Qt.locale().dateTimeFormat(Locale.ShortFormat))
++                text: (root.simSlot ? "SIM " + root.simSlot + "  ·  " : "") + Qt.formatDateTime(model.startedAt, Qt.locale().dateTimeFormat(Locale.ShortFormat))
+             }
+ 
+             Controls.Label {
+--- a/plasma-dialer/src/qml/ImeiSheet.qml
++++ b/plasma-dialer/src/qml/ImeiSheet.qml
+@@ -17,8 +17,12 @@
+         spacing: Kirigami.Units.largeSpacing * 5
+         Layout.fillWidth: true
+         // m52xq: see USSDSheet.qml: width from content only
+-        Layout.minimumWidth: Kirigami.Units.gridUnit * 20
+-        implicitWidth: Kirigami.Units.gridUnit * 20
++
++        // m52xq: an invisible spacer sets the width of the sheet (implicitWidth of a Layout is recalculated from its children)
++        Item {
++            Layout.preferredWidth: Kirigami.Units.gridUnit * 20
++            Layout.preferredHeight: 0
++        }
+ 
+         Controls.Label {
+             Layout.fillWidth: true
+--- a/plasma-dialer/src/qml/USSDSheet.qml
++++ b/plasma-dialer/src/qml/USSDSheet.qml
+@@ -52,8 +52,12 @@
+         spacing: Kirigami.Units.largeSpacing * 5
+         Layout.fillWidth: true
+         // m52xq: the sheet takes its width from its content; with the label still empty (waiting for the operator) it shrank to a thin strip
+-        Layout.minimumWidth: Kirigami.Units.gridUnit * 20
+-        implicitWidth: Kirigami.Units.gridUnit * 20
++
++        // m52xq: an invisible spacer sets the width of the sheet (implicitWidth of a Layout is recalculated from its children)
++        Item {
++            Layout.preferredWidth: Kirigami.Units.gridUnit * 20
++            Layout.preferredHeight: 0
++        }
+ 
+         Controls.Label {
+             Layout.fillWidth: true

@@ -1,0 +1,10 @@
+[Unit]
+Description=M52XQ: SIM slot of every ICCID (for the call log)
+After=ModemManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/m52xq-sim-slots
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+--- a/qml/components/OptionsOverlay.qml
++++ b/qml/components/OptionsOverlay.qml
+@@ -76,10 +76,9 @@
+         onRotationChanged: if (caller) { alignWith(caller); }
+ 
+         property OptionButton caller
+-        property int screenHeight: ((Screen.orientation == Qt.PortraitOrientation || Screen.orientation == Qt.InvertedPortraitOrientation)
+-                                            ? main.sensorHasDifferentOrientation ? Screen.width : Screen.height
+-                                            : main.sensorHasDifferentOrientation ? Screen.height : Screen.width
+-                                   )
++        // m52xq: Screen.orientation does not change on wayland (Lomiri turns the window itself): the height of the list
++        // is taken from the real window, otherwise in landscape the upper items (the large resolutions) went off the screen
++        property int screenHeight: optionsOverlay.height
+ 
+         function toggle(model, callerButton) {
+             if (optionValueSelectorVisible && optionValueSelector.model === model) {

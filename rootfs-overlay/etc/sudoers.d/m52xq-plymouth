@@ -1,0 +1,1 @@
+user ALL=(root) NOPASSWD: /usr/bin/plymouth quit --retain-splash

@@ -1,0 +1,7 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=M52XQ: watch ~/.local/share/applications for click apps
+[Path]
+PathChanged=/home/user/.local/share/applications
+[Install]
+WantedBy=multi-user.target

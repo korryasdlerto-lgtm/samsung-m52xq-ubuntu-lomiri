@@ -1,0 +1,9 @@
+#!/bin/sh
+# m52xq: click apps (OpenStore and what it installs) start as "aa-exec-click -p <profile> -- <app>" (Exec= of their .desktop).
+# The original refuses to run when an X socket exists (Xwayland of Lomiri: "Detected click app running under X! Aborting")
+# and calls aa-exec, which needs AppArmor (not in this kernel). So: -x (allow X), a private aa-exec that just runs the command,
+# the app environment of m52xq-app-env (grid unit, wayland, no DISPLAY) and libxml2.so.2 (focal click packages bundle
+# libsoup/libsnapd linked to it; the system has libxml2.so.16).
+export PATH=/usr/local/lib/m52xq-click:$PATH
+export LD_LIBRARY_PATH=/usr/local/lib/m52xq-click/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+exec /usr/local/bin/m52xq-app-env /usr/bin/aa-exec-click -x "$@"

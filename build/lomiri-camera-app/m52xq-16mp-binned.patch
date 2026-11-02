@@ -1,0 +1,16 @@
+--- a/CameraApp/advancedcamerasettings.cpp
++++ b/CameraApp/advancedcamerasettings.cpp
+@@ -328,9 +328,12 @@
+ // sensor of the phone
+ static QList<QSize> m52xqImageSizes()
+ {
++    // m52xq: "16 MP" is 4608x3456, not 4624x3468: the soft ISP gives at most 4616 px wide from the 4624x3468 binned sensor mode,
++    // so 4624 forced libcamera onto the full 9248x6936 frame (raw 4-cell, re-mosaiced) with a bright 8x6 tile pattern; 4608x3456
++    // is read straight from the binned mode (clean, less noise)
+     // 4:3 and 16:9 up to 16 MP / 4K, plus the full sensor: main s5kgw3 9240x6936 (64 MP), front imx616 6520x4896
+     // (32 MP); the camera in use is in M52XQ_CAMERA (CameraApplication::selectLibcamera)
+-    QList<QSize> sizes = { QSize(4624, 3468), QSize(4000, 3000), QSize(3264, 2448), QSize(2592, 1944), QSize(1600, 1200),
++    QList<QSize> sizes = { QSize(4608, 3456), QSize(4000, 3000), QSize(3264, 2448), QSize(2592, 1944), QSize(1600, 1200),
+                            QSize(3840, 2160), QSize(2560, 1440), QSize(1920, 1080), QSize(1280, 720) };
+     sizes.prepend(qgetenv("M52XQ_CAMERA") == "front" ? QSize(6520, 4896) : QSize(9240, 6936));
+     return sizes;

@@ -1,0 +1,203 @@
+#!/usr/bin/python3
+# M52XQ (убунтутач24/003, Lomiri): SIM cards in the top panel / shade.
+# lomiri-indicator-network takes modems only from oFono; this image runs ModemManager (mobile data, GPS, plasma-dialer,
+# spacebar), so the panel showed no SIM, signal or operator. This indicator reads ModemManager over the system bus
+# (every 3 s) and exports an ayatana indicator like the UT one: per SIM slot "simcard-N" + signal bars, then the access
+# technology of the first registered SIM; in the shade one line per SIM (operator, technology, signal) + the mobile data switch
+# (NetworkManager gsm connection). Runs in the user session (started by the lomiri wrapper).
+import os, subprocess
+from gi.repository import Gio, GLib
+
+NAME, PATH = 'org.ayatana.indicator.m52xqsim', '/org/ayatana/indicator/m52xqsim'
+MM, MM_PATH = 'org.freedesktop.ModemManager1', '/org/freedesktop/ModemManager1'
+I_MODEM, I_3GPP, I_SIM = MM + '.Modem', MM + '.Modem.Modem3gpp', MM + '.Sim'
+
+ru = (os.environ.get('LANGUAGE') or os.environ.get('LANG') or '').startswith('ru')
+T = {
+	'title': 'SIM-карты' if ru else 'SIM cards',
+	'none': 'Нет SIM-карты' if ru else 'No SIM card',
+	'nomodem': 'Модем не найден' if ru else 'No modem',
+	'locked': 'SIM заблокирована (PIN)' if ru else 'SIM locked (PIN)',
+	'noservice': 'нет сети' if ru else 'no service',
+	'search': 'поиск сети…' if ru else 'searching…',
+	'off': 'выключен' if ru else 'off',
+	'data': 'Мобильные данные' if ru else 'Mobile data',
+}
+sysbus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+
+
+def log(msg):
+	print('m52xq-indicator-sim: ' + msg, flush=True)
+
+
+def icon(name):
+	return Gio.ThemedIcon.new_with_default_fallbacks(name).serialize()
+
+
+def tech(bits):
+	# MMModemAccessTechnology
+	if bits & (1 << 15): return '5G', 'network-cellular-5g'
+	if bits & ((1 << 14) | (1 << 16) | (1 << 17)): return '4G', 'network-cellular-lte'
+	if bits & (1 << 9): return 'H+', 'network-cellular-hspa-plus'
+	if bits & ((1 << 6) | (1 << 7) | (1 << 8)): return 'H', 'network-cellular-hspa'
+	if bits & (1 << 5): return '3G', 'network-cellular-3g'
+	if bits & (1 << 4): return 'E', 'network-cellular-edge'
+	if bits & ((1 << 1) | (1 << 2) | (1 << 3)): return '2G', 'network-cellular-pre-edge'
+	return '', None
+
+
+def bars(q):
+	return 'gsm-3g-' + ('none' if q <= 0 else 'low' if q < 25 else 'medium' if q < 50 else 'high' if q < 75 else 'full')
+
+
+def prop(objects, path, iface, name, default=None):
+	return objects.get(path, {}).get(iface, {}).get(name, default)
+
+
+def read_sims():
+	"""[(slot, line, signal icon, tech icon or None)] for every modem, sorted by its active slot."""
+	try:
+		objects = sysbus.call_sync(MM, MM_PATH, 'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects',
+				None, GLib.VariantType('(a{oa{sa{sv}}})'), Gio.DBusCallFlags.NONE, 3000, None).unpack()[0]
+	except GLib.Error:
+		return None
+	sims = []
+	# m52xq (DSDS): one modem per SIM (qrtr0, qrtr0-sim2), each with both slots in SimSlots and its own slot active
+	for path in (p for p in objects if I_MODEM in objects[p]):
+		m = objects[path][I_MODEM]
+		state = m.get('State', 0)
+		slots = m.get('SimSlots', [])
+		slot = m.get('PrimarySimSlot', 0) or len(sims) + 1
+		sim = slots[slot - 1] if 0 < slot <= len(slots) else m.get('Sim', '/')
+		if sim == '/':
+			sims.append((slot, T['none'], 'no-simcard', None))
+			continue
+		if state == 2:
+			sims.append((slot, T['locked'], 'simcard-locked', None))
+			continue
+		op = objects[path].get(I_3GPP, {}).get('OperatorName', '') or \
+			prop(objects, sim, I_SIM, 'OperatorName', '') or 'SIM %d' % slot
+		q = m.get('SignalQuality', (0, False))[0]
+		label, ticon = tech(m.get('AccessTechnologies', 0))
+		if state in (-1, 0, 1, 3, 4, 5):
+			sims.append((slot, '%s — %s' % (op, T['off']), 'gsm-3g-disabled', None))
+		elif state == 7:
+			sims.append((slot, '%s — %s' % (op, T['search']), 'gsm-3g-no-service', None))
+		elif state >= 8:
+			sims.append((slot, '%s — %s, %d%%' % (op, label or '?', q), bars(q), ticon))
+		else:
+			sims.append((slot, '%s — %s' % (op, T['noservice']), 'gsm-3g-no-service', None))
+	sims.sort()
+	return sims
+
+
+def gsm_connection():
+	"""(name, active) of the NetworkManager gsm connection, or (None, False)."""
+	try:
+		out = subprocess.run(['nmcli', '-t', '-f', 'NAME,TYPE,ACTIVE', 'connection', 'show'],
+				capture_output=True, text=True, timeout=5).stdout
+	except Exception:
+		return None, False
+	for line in out.splitlines():
+		f = line.replace('\\:', '\0').split(':')
+		if len(f) >= 3 and f[1] == 'gsm':
+			return f[0].replace('\0', ':'), f[2] == 'yes'
+	return None, False
+
+
+class Indicator:
+	def __init__(self, con):
+		self.con = con
+		self.actions = Gio.SimpleActionGroup()
+		self.root_action = Gio.SimpleAction.new_stateful('root-phone', None, self.root_state([]))
+		self.actions.add_action(self.root_action)
+		self.data_action = Gio.SimpleAction.new_stateful('mobile-data', None, GLib.Variant('b', False))
+		self.data_action.connect('activate', self.toggle_data)
+		self.data_action.connect('change-state', lambda a, v: self.toggle_data(a, None))
+		self.actions.add_action(self.data_action)
+		self.sim_action = Gio.SimpleAction.new('sim', GLib.VariantType('i'))
+		self.actions.add_action(self.sim_action)
+		self.section = Gio.Menu()
+		menu = Gio.Menu()
+		menu.append_section(None, self.section)
+		item = Gio.MenuItem.new(None, 'indicator.root-phone')
+		item.set_attribute_value('x-ayatana-type', GLib.Variant('s', 'org.ayatana.indicator.root'))
+		item.set_submenu(menu)
+		self.root = Gio.Menu()
+		self.root.append_item(item)
+		con.export_action_group(PATH, self.actions)
+		for profile in ('phone', 'phone_greeter', 'desktop'):
+			con.export_menu_model(PATH + '/' + profile, self.root)
+		self.last = None
+		self.update()
+		GLib.timeout_add_seconds(3, self.update)
+
+	def root_state(self, sims):
+		icons = []
+		if not sims:
+			icons.append(icon('no-simcard'))
+		for slot, line, sig, ticon in sims:
+			if len(sims) > 1:
+				icons.append(icon('simcard-%d' % slot if slot <= 2 else 'simcard'))
+			icons.append(icon(sig))
+		for slot, line, sig, ticon in sims:
+			if ticon:
+				icons.append(icon(ticon))
+				break
+		desc = '; '.join('SIM %d: %s' % (s[0], s[1]) for s in sims) or T['none']
+		return GLib.Variant('a{sv}', {
+			'visible': GLib.Variant('b', True),
+			'title': GLib.Variant('s', T['title']),
+			'accessible-desc': GLib.Variant('s', desc),
+			'icons': GLib.Variant('av', icons),
+			'icon': icons[0],
+		})
+
+	def update(self):
+		sims = read_sims()
+		if sims is None:
+			sims = []
+			lines = [(0, T['nomodem'], 'no-simcard', None)]
+		else:
+			lines = sims or [(0, T['none'], 'no-simcard', None)]
+		conn, active = gsm_connection()
+		state = (tuple(sims), tuple(lines), conn, active)
+		if state == self.last:
+			return True
+		self.last = state
+		self.root_action.set_state(self.root_state(sims))
+		self.data_action.set_state(GLib.Variant('b', active))
+		self.data_action.set_enabled(conn is not None)
+		self.section.remove_all()
+		for slot, line, sig, ticon in lines:
+			text = ('SIM %d: %s' % (slot, line)) if slot else line
+			item = Gio.MenuItem.new(text, None)
+			item.set_action_and_target_value('indicator.sim', GLib.Variant('i', slot))
+			item.set_attribute_value('icon', icon('simcard-%d' % slot if 1 <= slot <= 2 else 'no-simcard'))
+			self.section.append_item(item)
+		item = Gio.MenuItem.new(T['data'], 'indicator.mobile-data')
+		item.set_attribute_value('x-ayatana-type', GLib.Variant('s', 'org.ayatana.indicator.switch'))
+		self.section.append_item(item)
+		return True
+
+	def toggle_data(self, action, param):
+		conn, active = gsm_connection()
+		if conn is None:
+			return
+		log('mobile data ' + ('down' if active else 'up') + ': ' + conn)
+		subprocess.Popen(['nmcli', 'connection', 'down' if active else 'up', conn],
+				stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		self.last = None
+		GLib.timeout_add_seconds(2, lambda: self.update() and False)
+
+
+def main():
+	loop = GLib.MainLoop()
+	con = Gio.bus_get_sync(Gio.BusType.SESSION)
+	ind = Indicator(con)
+	Gio.bus_own_name_on_connection(con, NAME, Gio.BusNameOwnerFlags.NONE, None, lambda *a: loop.quit())
+	log('started')
+	loop.run()
+
+
+main()

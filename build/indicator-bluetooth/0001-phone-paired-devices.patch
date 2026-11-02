@@ -1,0 +1,84 @@
+--- a/src/phone.vala
++++ b/src/phone.vala
+@@ -22,6 +22,11 @@
+ class Phone: Profile
+ {
+   SimpleActionGroup action_group;
++  // m52xq (убунтутач24/003 v3): the paired (trusted) devices with a connect switch, as on the desktop menu; upstream the
++  // phone menu had only the Bluetooth switch and the settings link
++  Menu device_section;
++  HashTable<uint,SimpleAction> connect_actions;
++  uint idle_rebuild_id = 0;
+ 
+   public Phone (Bluetooth bluetooth, SimpleActionGroup action_group)
+   {
+@@ -40,12 +45,30 @@
+     foreach (var a in actions)
+       action_group.add_action (a);
+ 
++    connect_actions = new HashTable<uint,SimpleAction>(direct_hash, direct_equal);
++
+     var section = new Menu ();
+     section.append_item (create_enabled_menuitem ());
++    menu.append_section (null, section);
++
++    device_section = new Menu ();
++    rebuild_device_section ();
++    menu.append_section (null, device_section);
++
++    section = new Menu ();
+     section.append (_("Bluetooth settings…"),
+                     "indicator.phone-show-settings::bluetooth");
+     menu.append_section (null, section);
+ 
++    bluetooth.devices_changed.connect (() => {
++      if (idle_rebuild_id == 0)
++        idle_rebuild_id = Idle.add (() => {
++          rebuild_device_section ();
++          idle_rebuild_id = 0;
++          return false;
++        });
++    });
++
+     // know when to show the indicator & when to hide it
+     bluetooth.notify.connect (() => update_visibility());
+     update_visibility ();
+@@ -53,6 +76,38 @@
+     bluetooth.notify.connect (() => update_root_action_state());
+   }
+ 
++  void rebuild_device_section ()
++  {
++    device_section.remove_all ();
++
++    foreach (var device in bluetooth.get_devices ())
++      {
++        if (!device.is_trusted && !device.is_connected)
++          continue;
++
++        var id = device.id;
++        var action_name = @"phone-device-$(id)-connected";
++
++        if (!connect_actions.contains (id))
++          {
++            var a = new SimpleAction.stateful (action_name, VariantType.BOOLEAN,
++                                               new Variant.boolean (device.is_connected));
++            a.activate.connect ((action, param) => a.change_state (param));
++            a.change_state.connect ((action, requested)
++              => bluetooth.set_device_connected (id, requested.get_boolean ()));
++            connect_actions.insert (id, a);
++            action_group.add_action (a);
++          }
++        else
++          connect_actions.lookup (id).set_state (new Variant.boolean (device.is_connected));
++
++        var item = new MenuItem (device.name, @"indicator.$(action_name)(true)");
++        item.set_attribute ("x-ayatana-type", "s", "org.ayatana.indicator.switch");
++        item.set_attribute_value ("icon", device.icon.serialize ());
++        device_section.append_item (item);
++      }
++  }
++
+   void update_visibility ()
+   {
+     visible = bluetooth.enabled;

@@ -1,0 +1,12 @@
+[Unit]
+Description=M52XQ: ModemManager GNSS (NMEA) -> gpsd for lomiri-location-service
+After=ModemManager.service
+Wants=ModemManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/m52xq-gnss-gpsd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

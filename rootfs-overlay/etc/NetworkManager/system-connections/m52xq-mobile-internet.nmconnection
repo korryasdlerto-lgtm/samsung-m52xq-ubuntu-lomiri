@@ -1,0 +1,18 @@
+[connection]
+id=Мобильный интернет
+uuid=9b1f6c2e-3a8d-4e7b-9c51-6d2f0a4e8b13
+type=gsm
+interface-name=qrtr0-sim2
+timestamp=1792803817
+
+[gsm]
+apn=internet
+
+[ipv4]
+method=auto
+
+[ipv6]
+addr-gen-mode=stable-privacy
+method=disabled
+
+[proxy]

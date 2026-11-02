@@ -1,0 +1,14 @@
+--- a/kde-telephony-daemon/src/notification-manager.cpp	2026-10-29 01:07:25.802519131 +0000
++++ b/kde-telephony-daemon/src/notification-manager.cpp	2026-10-29 01:07:26.242540259 +0000
+@@ -155,6 +155,11 @@
+     // this will be used by the notification applet to show custom notification UI
+     // with swipe decision.
+     m_ringingNotification->setHint(QStringLiteral("category"), QStringLiteral("x-kde.incoming-call"));
++    // m52xq (Lomiri): the shell shows a notification with actions as a snap decision (full buttons over the lock screen,
++    // wakes the screen) only with these hints; without them it was a plain bubble: no way to answer
++    m_ringingNotification->setHint(QStringLiteral("x-lomiri-snap-decisions"), QStringLiteral("true"));
++    m_ringingNotification->setHint(QStringLiteral("x-lomiri-private-affirmative-tint"), QStringLiteral("true"));
++    m_ringingNotification->setHint(QStringLiteral("x-lomiri-private-rejection-tint"), QStringLiteral("true"));
+ 
+     // m52xq: tapping the body of the incoming call notification opens the dialer
+     auto openAction = m_ringingNotification->addDefaultAction(i18n("Open"));

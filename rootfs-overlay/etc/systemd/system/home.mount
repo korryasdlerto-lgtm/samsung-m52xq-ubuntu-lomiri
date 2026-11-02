@@ -1,0 +1,12 @@
+[Unit]
+Description=M52XQ: /home on the userdata partition
+Requires=m52xq-userdata-dirs.service
+After=m52xq-userdata-dirs.service
+ConditionPathIsDirectory=/run/m52xq-rootsrc/userdata/m52xq/home
+[Mount]
+What=/run/m52xq-rootsrc/userdata/m52xq/home
+Where=/home
+Type=none
+Options=bind
+[Install]
+WantedBy=local-fs.target

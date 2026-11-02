@@ -1,0 +1,21 @@
+#!/bin/sh
+# m52xq (classic): Lomiri reads .desktop files only from /custom/xdg/data:/usr/share:/custom/usr/share, while click hooks put the apps
+# of OpenStore into ~/.local/share/applications. Copies them (marked X-M52XQ-Synced=1) to /custom/xdg/data/applications and
+# removes the copies whose source is gone (uninstalled apps). Started by m52xq-click-desktops.path on every change.
+# Only what really changed is written: Lomiri rebuilds its application list on every write to that directory, and rewriting all the
+# entries on each run made the app drawer flicker (a duplicated icon, icons jumping).
+S=/home/user/.local/share/applications; D=/custom/xdg/data/applications; T=/run/m52xq-click-desktops.new
+[ -d "$S" ] || exit 0
+for f in "$S"/*.desktop; do
+	[ -f "$f" ] || continue
+	grep -q '^X-Lomiri-Application-ID=' "$f" || continue
+	b=$(basename "$f")
+	{ cat "$f"; echo "X-M52XQ-Synced=1"; } > "$T"
+	cmp -s "$T" "$D/$b" || cp "$T" "$D/$b"
+done
+rm -f "$T"
+for f in "$D"/*.desktop; do
+	grep -q '^X-M52XQ-Synced=1' "$f" 2>/dev/null || continue
+	[ -f "$S/$(basename "$f")" ] || rm -f "$f"
+done
+exit 0

@@ -1,0 +1,12 @@
+[Unit]
+Description=M52XQ: SIM cards indicator (ModemManager) for the Lomiri panel and shade
+PartOf=graphical-session.target lomiri-indicators.target
+After=lomiri-indicators.target
+
+[Service]
+ExecStart=/usr/local/sbin/m52xq-indicator-sim
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=lomiri-indicators.target

@@ -1,0 +1,24 @@
+--- a/plasma-dialer/src/qml/ImeiSheet.qml	2026-10-29 01:13:23.717702619 +0000
++++ b/plasma-dialer/src/qml/ImeiSheet.qml	2026-10-29 01:13:56.890952084 +0000
+@@ -16,6 +16,9 @@
+ 
+         spacing: Kirigami.Units.largeSpacing * 5
+         Layout.fillWidth: true
++        // m52xq: see USSDSheet.qml: width from content only
++        Layout.minimumWidth: Kirigami.Units.gridUnit * 20
++        implicitWidth: Kirigami.Units.gridUnit * 20
+ 
+         Controls.Label {
+             Layout.fillWidth: true
+--- a/plasma-dialer/src/qml/USSDSheet.qml	2026-10-29 01:13:23.717702619 +0000
++++ b/plasma-dialer/src/qml/USSDSheet.qml	2026-10-29 01:13:34.922126948 +0000
+@@ -51,6 +51,9 @@
+ 
+         spacing: Kirigami.Units.largeSpacing * 5
+         Layout.fillWidth: true
++        // m52xq: the sheet takes its width from its content; with the label still empty (waiting for the operator) it shrank to a thin strip
++        Layout.minimumWidth: Kirigami.Units.gridUnit * 20
++        implicitWidth: Kirigami.Units.gridUnit * 20
+ 
+         Controls.Label {
+             Layout.fillWidth: true

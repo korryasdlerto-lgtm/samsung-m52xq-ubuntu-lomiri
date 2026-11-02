@@ -1,0 +1,5 @@
+#!/bin/sh
+# m52xq (classic): /usr/bin/callaudiod (package callaudiod, pulled by plasma-dialer; diverted to callaudiod.real) cannot route the modem voice:
+# "callaudiod: no available output found!", no sound in the call. The voice audio runs ADSP -> codec without PulseAudio, so the call buttons
+# (loud speaker, mute) are handled by our replacement (same D-Bus name org.mobian_project.CallAudio) and applied by m52xq-voicecall (root).
+exec /usr/local/bin/m52xq-callaudiod "$@"

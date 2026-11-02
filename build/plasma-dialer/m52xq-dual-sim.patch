@@ -1,0 +1,145 @@
+diff -ru qml.orig/call/CallPage.qml plasma-dialer-6.8.1/plasma-dialer/src/qml/call/CallPage.qml
+--- qml.orig/call/CallPage.qml	2026-10-20 12:07:43.000000000 +0300
++++ plasma-dialer-6.8.1/plasma-dialer/src/qml/call/CallPage.qml	2026-10-25 19:37:53.736832115 +0200
+@@ -155,11 +155,11 @@
+ 
+                 Connections {
+                     function onAccepted() {
+-                        CallUtils.accept(activeDeviceUni(), activeCallUni());
++                        applicationWindow().forEachModem((d) => CallUtils.accept(d, activeCallUni()));
+                     }
+ 
+                     function onRejected() {
+-                        CallUtils.hangUp(activeDeviceUni(), activeCallUni());
++                        applicationWindow().forEachModem((d) => CallUtils.hangUp(d, activeCallUni()));
+                     }
+ 
+                     target: answerControlLoader.item
+@@ -200,7 +200,7 @@
+                 width: Kirigami.Units.gridUnit * 3.5
+                 height: Kirigami.Units.gridUnit * 3.5
+                 onClicked: {
+-                    CallUtils.hangUp(activeDeviceUni(), activeCallUni());
++                    applicationWindow().forEachModem((d) => CallUtils.hangUp(d, activeCallUni()));
+                 }
+ 
+                 background: Rectangle {
+diff -ru qml.orig/dialpad/Dialpad.qml plasma-dialer-6.8.1/plasma-dialer/src/qml/dialpad/Dialpad.qml
+--- qml.orig/dialpad/Dialpad.qml	2026-10-20 12:07:43.000000000 +0300
++++ plasma-dialer-6.8.1/plasma-dialer/src/qml/dialpad/Dialpad.qml	2026-10-25 19:37:53.732832122 +0200
+@@ -20,9 +20,8 @@
+     property bool callActive: ActiveCallModel.active
+ 
+     function sendDtmf(tones) {
+-        const deviceUni = applicationWindow().selectModem();
+         const callUni = ActiveCallModel.activeCallUni();
+-        CallUtils.sendDtmf(deviceUni, callUni, tones);
++        applicationWindow().forEachModem((deviceUni) => CallUtils.sendDtmf(deviceUni, callUni, tones));
+     }
+ 
+     function onPadNumberPressed(number) {
+@@ -58,15 +57,18 @@
+     }
+ 
+     function onCallButtonPressed(number) {
+-        const deviceUni = applicationWindow().selectModem();
+-        if (isSpecialCode(number)) {
+-            applicationWindow().ussdUserInitiated();
+-            UssdUtils.initiate(deviceUni, number);
+-        } else if (number === "*#06#") {
++        if (number === "*#06#") {
+             imeiSheet.show();
+-        } else {
+-            CallUtils.dial(deviceUni, number);
++            return;
+         }
++        applicationWindow().chooseModem((deviceUni) => {
++            if (isSpecialCode(number)) {
++                applicationWindow().ussdUserInitiated();
++                UssdUtils.initiate(deviceUni, number);
++            } else {
++                CallUtils.dial(deviceUni, number);
++            }
++        });
+     }
+ 
+     function callVoicemail() {
+@@ -76,8 +78,7 @@
+         } else {
+             pad.voicemailFail = false;
+             // voicemail number is real phone number and should not be a MMI code
+-            var device = applicationWindow().selectModem();
+-            CallUtils.dial(device, number);
++            applicationWindow().chooseModem((device) => CallUtils.dial(device, number));
+         }
+     }
+ 
+diff -ru qml.orig/Main.qml plasma-dialer-6.8.1/plasma-dialer/src/qml/Main.qml
+--- qml.orig/Main.qml	2026-10-20 12:07:43.000000000 +0300
++++ plasma-dialer-6.8.1/plasma-dialer/src/qml/Main.qml	2026-10-25 19:37:53.728832130 +0200
+@@ -101,7 +101,64 @@
+         if (deviceUniList.length === 1)
+             return deviceUniList[0];
+ 
+-        console.log("TODO: select device uni");
++        // m52xq (DSDS): one ModemManager modem per SIM; the one picked in simChooser for the last call / USSD
++        if (deviceUniList.indexOf(selectedModemUni) >= 0)
++            return selectedModemUni;
++        return sortedModems()[0];
++    }
++
++    property string selectedModemUni: ""
++
++    // the modem paths in a stable order (Modem/0 = SIM 1 on m52xq)
++    function sortedModems() {
++        return DeviceUtils.deviceUniList.slice().sort();
++    }
++
++    // with several modems asks "SIM 1 / SIM 2" first, then calls callback(deviceUni)
++    function chooseModem(callback) {
++        if (DeviceUtils.deviceUniList.length < 2) {
++            callback(selectModem());
++            return;
++        }
++        simChooser.callback = callback;
++        simChooser.open();
++    }
++
++    // call / hang-up / DTMF of an active call: the call belongs to one of the modems, the others ignore its callUni
++    function forEachModem(callback) {
++        const deviceUniList = DeviceUtils.deviceUniList;
++        for (let i = 0; i < deviceUniList.length; i++)
++            callback(deviceUniList[i]);
++    }
++
++    Kirigami.PromptDialog {
++        id: simChooser
++
++        property var callback: null
++
++        function pick(index) {
++            const modems = root.sortedModems();
++            close();
++            if (index < modems.length && callback) {
++                root.selectedModemUni = modems[index];
++                callback(modems[index]);
++            }
++        }
++
++        title: Qt.locale().name.startsWith("ru") ? "Выберите SIM-карту" : "Choose SIM card"
++        standardButtons: Kirigami.Dialog.Cancel
++        customFooterActions: [
++            Kirigami.Action {
++                text: "SIM 1"
++                icon.name: "call-start"
++                onTriggered: simChooser.pick(0)
++            },
++            Kirigami.Action {
++                text: "SIM 2"
++                icon.name: "call-start"
++                onTriggered: simChooser.pick(1)
++            }
++        ]
+     }
+ 
+     function call(number) {

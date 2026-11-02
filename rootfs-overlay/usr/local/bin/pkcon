@@ -1,0 +1,26 @@
+#!/bin/sh
+# m52xq (classic): OpenStore (a 20.04 click package) installs apps with "pkcon install-local --allow-untrusted <file>.click" and
+# removes them with "pkcon remove <name>;<version>;all;local:click"; Ubuntu has neither pkcon nor a PackageKit click backend.
+# This stand-in handles just those two calls with click itself, as the calling user (/opt/click.ubuntu.com belongs to user, see
+# m52xq-userdata-dirs), and passes everything else to the real pkcon if there is one.
+U=${USER:-$(id -un)}
+case "$1" in
+install-local)
+	shift; f=
+	for a in "$@"; do case "$a" in -*) ;; *) f=$a ;; esac; done
+	[ -f "$f" ] || { echo "pkcon: no such file: $f" >&2; exit 1; }
+	click install --user="$U" --allow-unauthenticated "$f" || exit 1
+	;;
+remove)
+	shift; id=
+	for a in "$@"; do case "$a" in -*) ;; *) id=$a ;; esac; done
+	n=${id%%;*}; r=${id#*;}; v=${r%%;*}
+	[ -n "$n" ] || { echo "pkcon: nothing to remove" >&2; exit 1; }
+	click unregister --user="$U" "$n" $v || exit 1
+	;;
+*)
+	[ -x /usr/bin/pkcon ] && exec /usr/bin/pkcon "$@"
+	echo "pkcon: unsupported: $*" >&2; exit 1
+	;;
+esac
+exit 0

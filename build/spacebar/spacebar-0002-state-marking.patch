@@ -1,0 +1,24 @@
+--- a/src/contents/ui/MessagesPage.qml
++++ b/src/contents/ui/MessagesPage.qml
+@@ -638,7 +638,20 @@
+                     anchors.bottom: parent.bottom
+                     padding: Kirigami.Units.smallSpacing
+                     bottomPadding: 0
+-                    text: Qt.formatTime(model.time, Qt.DefaultLocaleShortDate) + (model.sim > 0 ? "  ·  SIM " + model.sim : "")
++                    // m52xq: the state icons of the theme do not load here: the state is shown by the colour of "SIM N" (red = not delivered,
++                    // green = delivered) and in words for failed / still going out
++                    readonly property bool isFailed: model.sentByMe && model.deliveryState == MessageModel.Failed
++                    readonly property bool isSent: model.sentByMe && model.deliveryState == MessageModel.Sent
++                    readonly property string stateColor: String(isFailed ? Kirigami.Theme.negativeTextColor
++                                                              : (isSent ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.disabledTextColor))
++                    readonly property bool ru: Qt.locale().name.startsWith("ru")
++                    textFormat: Text.StyledText
++                    readonly property string simPart: model.sim > 0 ? (model.sentByMe ? "<font color=\"" + stateColor + "\"><b>SIM " + model.sim + "</b></font>" : "SIM " + model.sim) : ""
++                    readonly property string timePart: Qt.formatTime(model.time, Qt.DefaultLocaleShortDate)
++                    // sent messages: "SIM N  ·  time" (SIM before the time), received: "time  ·  SIM N"
++                    text: (model.sentByMe ? (simPart ? simPart + "  ·  " : "") + timePart : timePart + (simPart ? "  ·  " + simPart : ""))
++                          + (isFailed ? "  <font color=\"" + stateColor + "\">" + (ru ? "не доставлено" : "not delivered") + "</font>" : "")
++                          + (model.sentByMe && model.deliveryState == MessageModel.Pending ? "  ·  " + (ru ? "отправляется…" : "sending…") : "")
+                     font: Kirigami.Theme.smallFont
+                     color: Kirigami.Theme.disabledTextColor
+ 

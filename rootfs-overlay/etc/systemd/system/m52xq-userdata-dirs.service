@@ -1,0 +1,11 @@
+[Unit]
+Description=M52XQ: source directories for /home and /opt/click.ubuntu.com on the userdata partition
+DefaultDependencies=no
+Before=home.mount opt-click.ubuntu.com.mount local-fs.target
+ConditionPathIsMountPoint=/run/m52xq-rootsrc/userdata
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/m52xq-userdata-dirs
+[Install]
+WantedBy=local-fs.target

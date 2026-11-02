@@ -1,0 +1,20 @@
+#!/bin/sh
+# m52xq: /usr/bin/aa-exec (diverted to aa-exec.real) for a kernel without AppArmor. lomiri-app-launch starts every click app as
+# "/usr/bin/aa-exec -p <profile> -- <command...>" and the real one fails: "profile '…' does not exist". Here the profile is dropped
+# and the command runs with the app environment (m52xq-app-env: grid unit, wayland, no DISPLAY) and the libxml2.so.2 shim
+# (click packages built for 20.04 bundle libsoup/libsnapd linked to it; the system has libxml2.so.16).
+# With AppArmor in the kernel (/sys/kernel/security/apparmor) the real tool is used.
+[ -d /sys/kernel/security/apparmor ] && exec /usr/bin/aa-exec.real "$@"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--) shift; break ;;
+	-p|-n|-f) shift 2 ;;
+	-*) shift ;;
+	*) break ;;
+	esac
+done
+# Lomiri gives its apps QT_QPA_PLATFORM='ubuntumirclient;wayland-egl;xcb': a click app with its own Qt 6 (Morph Browser Qt6) loaded the
+# system ubuntumirclient plugin (libhybris) and died with SEGV 1-2 s after start; the other apps already run on wayland-egl.
+export QT_QPA_PLATFORM=wayland-egl
+export LD_LIBRARY_PATH=/usr/local/lib/m52xq-click/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+exec /usr/local/bin/m52xq-app-env "$@"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# языковое окружение пользовательской сессии из AccountsService (язык, выбранный в мастере): без этого индикаторы
+# верхней панели и сам Lomiri остаются на английском (LANG из /etc/default/locale)
+u=$(id -u)
+l=$(busctl --system get-property org.freedesktop.Accounts /org/freedesktop/Accounts/User$u org.freedesktop.Accounts.User Language 2>/dev/null | sed -n 's/^s "\(.*\)"$/\1/p')
+[ -n "$l" ] || exit 0
+l=${l%%.*}
+echo "LANG=$l.UTF-8"
+echo "LANGUAGE=${l%%_*}"

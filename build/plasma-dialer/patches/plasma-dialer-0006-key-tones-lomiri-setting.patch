@@ -1,0 +1,57 @@
+--- a/plasma-dialer/src/CMakeLists.txt	2026-10-29 01:15:48.787026274 +0000
++++ b/plasma-dialer/src/CMakeLists.txt	2026-10-29 01:15:49.223041765 +0000
+@@ -11,6 +11,7 @@
+ 
+ find_package(PkgConfig REQUIRED)
+ pkg_check_modules(Canberra REQUIRED IMPORTED_TARGET libcanberra)
++pkg_check_modules(Gio REQUIRED IMPORTED_TARGET gio-2.0)
+ 
+ add_executable(plasma-dialer main.cpp ${dialer_SRCS})
+ 
+@@ -85,6 +86,7 @@
+     KF6::I18nQml
+     KF6::DBusAddons
+     PkgConfig::Canberra
++    PkgConfig::Gio
+ )
+ if (DIALER_BUILD_SHELL_OVERLAY)
+     target_link_libraries(plasma-dialer PRIVATE
+--- a/plasma-dialer/src/keytones.cpp	2026-10-29 01:15:48.791026416 +0000
++++ b/plasma-dialer/src/keytones.cpp	2026-10-29 01:15:49.219041621 +0000
+@@ -7,22 +7,25 @@
+ #include <QFile>
+ #include <QStandardPaths>
+ #include <canberra.h>
++#include <gio/gio.h>
+ 
+-// The dial pad tones follow the on-screen keyboard setting "Sound" (plasmakeyboardrc, [General] soundEnabled).
+-// Read on every press so toggling it in the settings applies at once; default off, like the keyboard.
++// The dial pad tones follow the on-screen keyboard setting of Lomiri (com.lomiri.keyboard.maliit, key-press-feedback: "Keyboard sounds"
++// in System Settings). Read on every press so toggling it applies at once; on a system without that schema the tones are on.
+ static bool keySoundEnabled()
+ {
+-    QFile f(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/plasmakeyboardrc"));
+-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+-        return false;
++    GSettingsSchemaSource *src = g_settings_schema_source_get_default();
++    GSettingsSchema *schema = src ? g_settings_schema_source_lookup(src, "com.lomiri.keyboard.maliit", TRUE) : nullptr;
++    if (!schema) {
++        return true;
+     }
+-    while (!f.atEnd()) {
+-        const QByteArray line = f.readLine().trimmed();
+-        if (line.startsWith("soundEnabled=")) {
+-            return line.mid(13).trimmed().toLower() == "true";
+-        }
++    bool on = true;
++    if (g_settings_schema_has_key(schema, "key-press-feedback")) {
++        GSettings *settings = g_settings_new_full(schema, nullptr, nullptr);
++        on = g_settings_get_boolean(settings, "key-press-feedback");
++        g_object_unref(settings);
+     }
+-    return false;
++    g_settings_schema_unref(schema);
++    return on;
+ }
+ 
+ KeyTones::KeyTones(QObject *parent)

@@ -1,0 +1,16 @@
+#!/bin/sh
+# m52xq (classic): the root file system is a 5 GB image (rootfs.img on the userdata partition, 98 GB free), so /home (photos, videos,
+# application data and caches) and /opt/click.ubuntu.com (apps from OpenStore) are bind-mounted from userdata. This runs before
+# home.mount / opt-click.ubuntu.com.mount: creates the source directories and, the first time, copies what is in the image
+# (cp -a, nothing is deleted from the image). userdata is mounted by the initramfs at /run/m52xq-rootsrc/userdata.
+S=/run/m52xq-rootsrc/userdata/m52xq
+mountpoint -q /run/m52xq-rootsrc/userdata || exit 1
+mkdir -p $S/home $S/click
+[ -e $S/home/.m52xq-copied ] || { cp -a /home/. $S/home/ && touch $S/home/.m52xq-copied; }
+[ -e $S/click/.m52xq-copied ] || { [ -d /opt/click.ubuntu.com ] && cp -a /opt/click.ubuntu.com/. $S/click/; touch $S/click/.m52xq-copied; }
+# OpenStore asks libclick for the packages of the user "phablet" (hard-coded, Ubuntu Touch) -> empty list, every app stayed "Install"
+# after installing; "phablet" is an alias of our user. click installs with pkcon (m52xq stand-in) run as the user, so it must own the db.
+mkdir -p $S/click/.click/users; ln -sfn user $S/click/.click/users/phablet
+chown -R user:user $S/click 2>/dev/null
+chmod 755 $S $S/home $S/click
+exit 0

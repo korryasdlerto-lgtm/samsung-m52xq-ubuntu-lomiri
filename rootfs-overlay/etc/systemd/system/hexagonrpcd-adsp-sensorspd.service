@@ -1,0 +1,19 @@
+[Unit]
+Description=M52XQ: FastRPC server for the ADSP sensors PD (sensorspd) — accelerometer, light, proximity via libssc
+After=m52xq-adsp-start.service
+Conflicts=suspend.target
+Before=suspend.target
+
+[Service]
+# /dev/fastrpc-adsp appears only after the ADSP is started (m52xq-adsp-start): wait for it, do not skip the unit
+ExecStartPre=/bin/sh -c 'for i in $(seq 120); do [ -e /dev/fastrpc-adsp ] && exit 0; sleep 1; done; exit 1'
+TimeoutStartSec=150
+# the Debian wrapper /usr/bin/hexagonrpcd with arguments runs the real binary as is; -R: registry/socinfo of this phone
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -s -R /usr/share/qcom/sm7325/Samsung/m52xq
+Restart=always
+RestartSec=3
+User=fastrpc
+Group=fastrpc
+
+[Install]
+WantedBy=multi-user.target

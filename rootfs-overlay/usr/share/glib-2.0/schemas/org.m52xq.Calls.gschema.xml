@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- m52xq (убунтутач24/003): "a call is going on" flag for Lomiri's Shell.qml (the Ubuntu Touch callManager.hasCalls runs on telepathy-ofono, we have
+     ModemManager). Set by m52xq-incall-proximity, read by the patched Shell.qml: the dialer is shown over the lock screen while it is true. -->
+<schemalist>
+  <schema id="org.m52xq.Calls" path="/org/m52xq/calls/">
+    <key name="active" type="b">
+      <default>false</default>
+      <summary>A modem call is going on</summary>
+    </key>
+  </schema>
+</schemalist>

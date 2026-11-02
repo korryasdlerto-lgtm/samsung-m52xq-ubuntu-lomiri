@@ -1,0 +1,15 @@
+[Indicator Service]
+Name=m52xq-indicator-sim
+ObjectPath=/org/ayatana/indicator/m52xqsim
+Position=60
+
+[desktop]
+ObjectPath=/org/ayatana/indicator/m52xqsim/desktop
+
+[phone]
+ObjectPath=/org/ayatana/indicator/m52xqsim/phone
+Position=34
+
+[phone_greeter]
+ObjectPath=/org/ayatana/indicator/m52xqsim/phone_greeter
+Position=34

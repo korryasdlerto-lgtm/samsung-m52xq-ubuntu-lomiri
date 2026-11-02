@@ -1,0 +1,747 @@
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/CameraApp/advancedcamerasettings.cpp lomiri-camera-app-v4.1.1/CameraApp/advancedcamerasettings.cpp
+--- orig-v4.1.1/CameraApp/advancedcamerasettings.cpp	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/CameraApp/advancedcamerasettings.cpp	2026-10-26 00:33:59.159512523 +0200
+@@ -323,11 +323,26 @@
+     return QSize();
+ }
+ 
++// m52xq: camerabin does not learn the sizes of libcamerasrc (its caps are known only once it streams), the lists
++// stayed empty (no photo size, a thin viewfinder strip, errors in the options): sizes libcamera gives for every
++// sensor of the phone
++static QList<QSize> m52xqImageSizes()
++{
++    // 4:3 and 16:9 up to 16 MP / 4K, plus the full sensor: main s5kgw3 9240x6936 (64 MP), front imx616 6520x4896
++    // (32 MP); the camera in use is in M52XQ_CAMERA (CameraApplication::selectLibcamera)
++    QList<QSize> sizes = { QSize(4624, 3468), QSize(4000, 3000), QSize(3264, 2448), QSize(2592, 1944), QSize(1600, 1200),
++                           QSize(3840, 2160), QSize(2560, 1440), QSize(1920, 1080), QSize(1280, 720) };
++    sizes.prepend(qgetenv("M52XQ_CAMERA") == "front" ? QSize(6520, 4896) : QSize(9240, 6936));
++    return sizes;
++}
++
+ QSize AdvancedCameraSettings::maximumResolution() const
+ {
+     if (m_imageEncoderControl) {
+         QList<QSize> sizes = m_imageEncoderControl->supportedResolutions(
+                                        m_imageEncoderControl->imageSettings());
++        if (sizes.isEmpty())
++            sizes = m52xqImageSizes();
+ 
+         QSize maximumSize;
+         long maximumPixels = 0;
+@@ -371,6 +386,8 @@
+ 
+     if(m_imageSupportedResolutions.isEmpty()) {
+         QList<QSize> sizes = m_imageEncoderControl->supportedResolutions(m_imageEncoderControl->imageSettings());
++        if (sizes.isEmpty())
++            sizes = m52xqImageSizes();
+         Q_FOREACH(QSize size, sizes) {
+             m_imageSupportedResolutions.append(QString("%1x%2").arg(size.width()).arg(size.height()));
+         }
+@@ -397,6 +414,8 @@
+     if (m_imageEncoderControl) {
+         QList<QSize> sizes = m_imageEncoderControl->supportedResolutions(
+                                        m_imageEncoderControl->imageSettings());
++        if (sizes.isEmpty())
++            sizes = m52xqImageSizes();
+ 
+         QSize optimalSize;
+         long optimalPixels = 0;
+@@ -452,6 +471,11 @@
+                 // Some backend can return bogus values while the camera isn't active yet.
+                 return QStringList();
+ 
++            // m52xq: no sizes from libcamerasrc (see imageSupportedResolutions)
++            if (sizes.isEmpty()) {
++                sizes << QSize(1280, 720) << QSize(1920, 1080);
++            }
++
+             Q_FOREACH(QSize size, sizes) {
+                 // Workaround for bug https://bugs.launchpad.net/ubuntu/+source/libhybris/+bug/1408650
+                 // When using the front camera on krillin, using resolution 640x480 does
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/cameraapplication.cpp lomiri-camera-app-v4.1.1/cameraapplication.cpp
+--- orig-v4.1.1/cameraapplication.cpp	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/cameraapplication.cpp	2026-10-26 00:38:08.911121135 +0200
+@@ -25,9 +25,12 @@
+ #include <QQmlEngine>
+ #include <QScreen>
+ #include <QtGui/QGuiApplication>
++#ifdef HAVE_QZXING
+ #include <QZXing.h>
++#endif
+ 
+ #include "config.h"
++#include <QProcess>
+ 
+ static void printUsage(const QStringList& arguments)
+ {
+@@ -57,6 +60,7 @@
+             qCritical("Library qttestability load failed!");
+         }
+     }
++    selectLibcamera(false);
+     if (arguments().contains(QLatin1String("--mode=barcode-reader"))) {
+         m_mode = CameraMode::BARCODE_READER;
+     }
+@@ -66,6 +70,19 @@
+ {
+ }
+ 
++// m52xq: libcamerasrc without camera-name opened just the first libcamera camera (imx258 or the front one) and Qt
++// cannot set it (QT_GSTREAMER_CAMERABIN_VIDEOSRC is split at '='): our m52xqcamsrc takes the camera from M52XQ_CAMERA
++// when camerabin builds its source again (on a deviceId change), so the "switch camera" button now switches
++void CameraApplication::selectLibcamera(bool front)
++{
++    qputenv("M52XQ_CAMERA", front ? "front" : "rear");
++}
++
++void CameraApplication::m52xqPostprocess(const QString &path)
++{
++    QProcess::startDetached(QStringLiteral("/usr/local/bin/m52xq-camera-postprocess"), { path });
++}
++
+ bool CameraApplication::isDesktopMode() const
+ {
+   // Platform is not a good way to determine this. Mainline devices currently
+@@ -81,6 +98,10 @@
+   // in name means it's running on device
+   // TODO: replace this check with SDK call for formfactor
+   QString platform = QGuiApplication::platformName();
++  // m52xq: under Lomiri (XDG_CURRENT_DESKTOP=Lomiri) the wayland platform is the phone, not a desktop: "desktop mode"
++  // mirrored the viewfinder like a webcam
++  if (qgetenv("XDG_CURRENT_DESKTOP") == "Lomiri")
++    return false;
+   return !((platform == "ubuntu") || (platform == "ubuntumirclient"));
+ #endif
+ }
+@@ -93,7 +114,9 @@
+                 Qt::InvertedPortraitOrientation |
+                 Qt::InvertedLandscapeOrientation);
+ 
++#ifdef HAVE_QZXING
+     QZXing::registerQMLTypes();
++#endif
+ 
+     m_engine.reset(new QQmlApplicationEngine());
+     m_engine->rootContext()->setContextProperty("application", this);
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/cameraapplication.h lomiri-camera-app-v4.1.1/cameraapplication.h
+--- orig-v4.1.1/cameraapplication.h	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/cameraapplication.h	2026-10-26 00:38:08.903121525 +0200
+@@ -36,6 +36,10 @@
+     virtual ~CameraApplication();
+     bool setup();
+     bool isDesktopMode() const;
++    // m52xq: camera of the libcamerasrc video source (Qt cannot tell libcamerasrc which camera to open)
++    Q_INVOKABLE void selectLibcamera(bool front);
++    // m52xq: /usr/local/bin/m52xq-camera-postprocess for a saved photo, in the background
++    Q_INVOKABLE void m52xqPostprocess(const QString &path);
+ 
+ Q_SIGNALS:
+ 
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/CMakeLists.txt lomiri-camera-app-v4.1.1/CMakeLists.txt
+--- orig-v4.1.1/CMakeLists.txt	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/CMakeLists.txt	2026-10-25 20:45:47.270572008 +0200
+@@ -49,12 +49,18 @@
+     find_path(QZXING_INCLUDE_DIRS QZXing.h PATH_SUFFIXES qzxing)
+     message(STATUS "QZXING_INCLUDE_DIRS: ${QZXING_INCLUDE_DIRS}")
+ 
+-    if(NOT QZXING_LIBRARIES)
+-        message(FATAL_ERROR "Could not find QZXing library")
+-    endif()
+-    if(NOT QZXING_INCLUDE_DIRS)
+-        message(FATAL_ERROR "Could not find QZXing headers")
++    # m52xq: QZXing is not packaged in Alpine; it only serves the separate barcode reader app (registerQMLTypes),
++    # the camera builds without it
++    if(NOT QZXING_LIBRARIES OR NOT QZXING_INCLUDE_DIRS)
++        message(WARNING "No QZXing: building without the barcode reader")
++        set(QZXING_LIBRARIES "")
++        set(QZXING_INCLUDE_DIRS "")
++        set(QZXING_CFLAGS_OTHER "")
++    else()
++        list(APPEND QZXING_CFLAGS_OTHER -DHAVE_QZXING)
+     endif()
++else()
++    list(APPEND QZXING_CFLAGS_OTHER -DHAVE_QZXING)
+ endif()
+ 
+ include(FindGettext)
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/main.cpp lomiri-camera-app-v4.1.1/main.cpp
+--- orig-v4.1.1/main.cpp	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/main.cpp	2026-10-25 21:02:59.438739495 +0200
+@@ -32,13 +32,15 @@
+ 
+ int main(int argc, char** argv)
+ {
+-    QGuiApplication app(argc, argv);
++    // m52xq: there was a second QGuiApplication before CameraApplication (itself a QGuiApplication): on the wayland
++    // platform the second one opened its own connection and the app aborted at start ("QThread: Destroyed while
++    // thread is still running")
++    CameraApplication application(argc, argv);
+     QCoreApplication::setApplicationName("camera.ubports");
+     // Necessary for Qt.labs.settings to work
+     // Ref.: https://bugs.launchpad.net/ubuntu-ui-toolkit/+bug/1354321
+     QCoreApplication::setOrganizationDomain(QGuiApplication::applicationName());
+     QCoreApplication::setApplicationVersion(projectVersion());
+-    CameraApplication application(argc, argv);
+ 
+     if (!application.setup()) {
+         return 0;
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/barcode-reader-app.qml lomiri-camera-app-v4.1.1/qml/barcode-reader-app.qml
+--- orig-v4.1.1/qml/barcode-reader-app.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/barcode-reader-app.qml	2026-10-25 23:21:43.960756326 +0200
+@@ -17,6 +17,7 @@
+ import QtQuick 2.12
+ import QtQuick.Window 2.2
+ import QtMultimedia 5.0
++import QtSensors 5.2
+ import Lomiri.Components 1.3
+ import UserMetrics 0.1
+ import Lomiri.Content 1.3
+@@ -30,9 +31,30 @@
+ Window {
+     id: main
+     objectName: "main"
+-    width: Math.min(Screen.width, height * viewFinderView.aspectRatio)
+-    height: Math.min(Screen.height, units.gu(80))
++    // m52xq: on the phone the window is the screen (see camera-app.qml)
++    width: application.desktopMode ? Math.min(Screen.width, height * viewFinderView.aspectRatio) : Screen.width
++    height: application.desktopMode ? Math.min(Screen.height, units.gu(80)) : Screen.height
+     color: "black"
++
++    // m52xq: the screen rotation from the accelerometer (Screen.orientation stays portrait on wayland)
++    OrientationSensor {
++        id: m52xqOrientationSensor
++        active: true
++    }
++    readonly property int m52xqScreenAngle: application.desktopMode ? Screen.angleBetween(Screen.primaryOrientation, Screen.orientation) : 0
++    readonly property int m52xqWindowAngle: (viewFinderView.width > viewFinderView.height)
++                                            ? ((m52xqDeviceAngle == 90 || m52xqDeviceAngle == 270) ? m52xqDeviceAngle : 90)
++                                            : (m52xqDeviceAngle == 180 ? 180 : 0)
++    readonly property int m52xqDeviceAngle: {
++        if (!m52xqOrientationSensor.reading)
++            return 0;
++        switch (m52xqOrientationSensor.reading.orientation) {
++        case OrientationReading.LeftUp: return 90;
++        case OrientationReading.TopDown: return 180;
++        case OrientationReading.RightUp: return 270;
++        default: return 0;
++        }
++    }
+     title: i18n.tr("Camera")
+     // special flag only supported by Unity8/MIR so far that hides the shell's
+     // top panel in Staged mode
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/camera-app.qml lomiri-camera-app-v4.1.1/qml/camera-app.qml
+--- orig-v4.1.1/qml/camera-app.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/camera-app.qml	2026-10-25 23:21:43.952758295 +0200
+@@ -18,7 +18,7 @@
+ import QtQuick.Window 2.2
+ import QtMultimedia 5.0
+ import Lomiri.Components 1.3
+-import Lomiri.Action 1.1 as LomiriActions
++// m52xq: Lomiri.Action (HUD keywords only) exists for Qt6 only in Alpine
+ import UserMetrics 0.1
+ import Lomiri.Content 1.3
+ import CameraApp 0.1
+@@ -31,8 +31,10 @@
+ Window {
+     id: main
+     objectName: "main"
+-    width: Math.min(Screen.width, height * viewFinderView.aspectRatio)
+-    height: Math.min(Screen.height, units.gu(80))
++    // m52xq: on the phone the window is the screen; the desktop size (80 grid units high) was stretched by Lomiri
++    // to the whole screen until a swipe made the app lay itself out again
++    width: application.desktopMode ? Math.min(Screen.width, height * viewFinderView.aspectRatio) : Screen.width
++    height: application.desktopMode ? Math.min(Screen.height, units.gu(80)) : Screen.height
+     color: "black"
+     title: i18n.tr("Camera")
+     // special flag only supported by Unity8/MIR so far that hides the shell's
+@@ -59,36 +61,6 @@
+         main.visibility = Window.Windowed;
+     }
+ 
+-    LomiriActions.ActionManager {
+-        actions: [
+-            LomiriActions.Action {
+-                text: i18n.tr("Flash")
+-                keywords: i18n.tr("Light;Dark")
+-            },
+-            LomiriActions.Action {
+-                text: i18n.tr("Flip Camera")
+-                keywords: i18n.tr("Front Facing;Back Facing")
+-            },
+-            LomiriActions.Action {
+-                text: i18n.tr("Shutter")
+-                keywords: i18n.tr("Take a Photo;Snap;Record")
+-            },
+-            LomiriActions.Action {
+-                text: i18n.tr("Mode")
+-                keywords: i18n.tr("Stills;Video")
+-                enabled: false
+-            },
+-            LomiriActions.Action {
+-                text: i18n.tr("White Balance")
+-                keywords: i18n.tr("Lighting Condition;Day;Cloudy;Inside")
+-            }
+-        ]
+-
+-        onQuit: {
+-            Qt.quit()
+-        }
+-    }
+-
+     Component.onCompleted: {
+         i18n.domain = "lomiri-camera-app";
+         i18n.bindtextdomain("lomiri-camera-app", i18nDirectory);
+@@ -102,10 +74,23 @@
+                                                       3 /* OrientationReading.RightUp */: 270}
+ 
+     readonly property int sensorOrientationAngle: angleToSensorOrientation[sensorOrientation]
+-    readonly property int screenOrientationAngle: Screen.angleBetween(Screen.primaryOrientation, Screen.orientation)
++    // m52xq: Lomiri turns this window itself like any other (no X-Lomiri-Rotates-Window-Contents in our .desktop
++    // copy: the camera turning its viewfinder, buttons, roll and panes on its own never agreed), so the interface
++    // stays unturned; only the sensor picture and the photo rotation follow the device (accelerometer)
++    readonly property int m52xqScreenAngle: application.desktopMode ? Screen.angleBetween(Screen.primaryOrientation, Screen.orientation) : 0
++    readonly property int m52xqDeviceAngle: sensorOrientationAngle
++    // m52xq: how the window is turned now (Lomiri sometimes keeps the screen portrait with the phone in landscape):
++    // by the window shape, the accelerometer only tells which landscape
++    readonly property int m52xqWindowAngle: (viewSwitcher.width > viewSwitcher.height)
++                                            ? ((m52xqDeviceAngle == 90 || m52xqDeviceAngle == 270) ? m52xqDeviceAngle : 90)
++                                            : (m52xqDeviceAngle == 180 ? 180 : 0)
++    readonly property int screenOrientationAngle: m52xqScreenAngle
+     
+-    readonly property int staticRotationAngle: screenOrientationAngle == sensorOrientationAngle ? screenOrientationAngle : sensorOrientationAngle
+-    readonly property int orientedRotationAngle: if (screenOrientationAngle != sensorOrientationAngle) {
++    // m52xq: the screen turns with the device now (Lomiri turns the window): no extra turn of the icons
++    readonly property int staticRotationAngle: !application.desktopMode ? 0 : screenOrientationAngle == sensorOrientationAngle ? screenOrientationAngle : sensorOrientationAngle
++    readonly property int orientedRotationAngle: if (!application.desktopMode) {
++                                                      0
++                                                  } else if (screenOrientationAngle != sensorOrientationAngle) {
+                                                       if (screenOrientationAngle > 0) {
+                                                           sensorOrientationAngle - screenOrientationAngle
+                                                       } else {
+@@ -143,7 +128,7 @@
+ 
+         property real panesMargin: units.gu(1)
+         property real ratio
+-        property int orientationAngle: Screen.angleBetween(Screen.primaryOrientation, Screen.orientation)
++        property int orientationAngle: main.m52xqScreenAngle
+         property var angleToOrientation: {0: "PORTRAIT",
+                                           90: "LANDSCAPE",
+                                           180: "INVERTED_PORTRAIT",
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/components/CircleButton.qml lomiri-camera-app-v4.1.1/qml/components/CircleButton.qml
+--- orig-v4.1.1/qml/components/CircleButton.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/components/CircleButton.qml	2026-10-25 23:02:29.717001974 +0200
+@@ -51,7 +51,7 @@
+         color: "white"
+         opacity: button.on ? (button.enabled ? 1.0 : 0.3): 0.5
+         visible: label === ""
+-        rotation: automaticOrientation ? Screen.angleBetween(Screen.primaryOrientation, Screen.orientation) : customRotation
++        rotation: automaticOrientation ? main.m52xqScreenAngle : customRotation
+         Behavior on rotation {
+             RotationAnimator {
+                 duration: LomiriAnimation.BriskDuration
+@@ -72,7 +72,7 @@
+         text: label
+         opacity: button.on ? (button.enabled ? 1.0 : 0.3): 0.5
+         visible: label !== ""
+-        rotation: automaticOrientation ? Screen.angleBetween(Screen.primaryOrientation, Screen.orientation) : customRotation
++        rotation: automaticOrientation ? main.m52xqScreenAngle : customRotation
+         Behavior on rotation {
+             RotationAnimator {
+                 duration: LomiriAnimation.BriskDuration
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/components/GalleryView.qml lomiri-camera-app-v4.1.1/qml/components/GalleryView.qml
+--- orig-v4.1.1/qml/components/GalleryView.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/components/GalleryView.qml	2026-10-25 23:11:26.874877333 +0200
+@@ -15,6 +15,7 @@
+  */
+ 
+ import QtQuick 2.12
++import QtQuick.Window 2.2
+ import Lomiri.Components 1.3
+ import Lomiri.Content 1.3
+ import Lomiri.Thumbnailer 0.1
+@@ -103,6 +104,9 @@
+     OrientationHelper {
+         id: orientHelper
+         visible: inView
++        // m52xq: the window is turned by Lomiri, the roll must not turn again
++        automaticOrientation: false
++        orientationAngle: 0
+ 
+         PageStack {
+             id:galleryPageStack
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/components/PhotoRollHint.qml lomiri-camera-app-v4.1.1/qml/components/PhotoRollHint.qml
+--- orig-v4.1.1/qml/components/PhotoRollHint.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/components/PhotoRollHint.qml	2026-10-25 23:21:31.675840481 +0200
+@@ -41,6 +41,8 @@
+     }
+ 
+     OrientationHelper {
++        // m52xq: the window is turned by Lomiri
++        automaticOrientation: application.desktopMode
+         Image {
+             id: hintPictogram
+             anchors {
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/components/PictureReview.qml lomiri-camera-app-v4.1.1/qml/components/PictureReview.qml
+--- orig-v4.1.1/qml/components/PictureReview.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/components/PictureReview.qml	2026-10-25 23:02:29.713001990 +0200
+@@ -28,7 +28,7 @@
+     // Rotation is locked at the moment the picture is shoot
+     // (in case processing is long, such as with HDR)
+     function lockOrientation() {
+-        image.rotation = Screen.angleBetween(Screen.primaryOrientation, Screen.orientation)
++        image.rotation = main.m52xqScreenAngle
+     }
+ 
+     Image {
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/components/ShootButton.qml lomiri-camera-app-v4.1.1/qml/components/ShootButton.qml
+--- orig-v4.1.1/qml/components/ShootButton.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/components/ShootButton.qml	2026-10-25 21:54:05.663490417 +0200
+@@ -34,6 +34,13 @@
+     Image {
+         id: icon
+         anchors.centerIn: parent
++        // m52xq: the @27 asset came out squeezed along the long side of the screen: an explicit square of the
++        // asset's own size (226 px at 27 px per grid unit), aspect kept
++        width: units.gu(226 / 27)
++        height: width
++        sourceSize.width: width
++        sourceSize.height: width
++        fillMode: Image.PreserveAspectFit
+         cache: false
+         asynchronous: true
+     }
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/components/StopWatch.qml lomiri-camera-app-v4.1.1/qml/components/StopWatch.qml
+--- orig-v4.1.1/qml/components/StopWatch.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/components/StopWatch.qml	2026-10-25 23:02:29.713001990 +0200
+@@ -25,7 +25,7 @@
+     width: content.childrenRect.width + content.anchors.leftMargin + content.anchors.rightMargin
+     height: content.childrenRect.height + units.gu(1.5)
+ 
+-    rotation: Screen.angleBetween(Screen.primaryOrientation, Screen.orientation)
++    rotation: main.m52xqScreenAngle
+     Behavior on rotation {
+         RotationAnimator {
+             duration: LomiriAnimation.BriskDuration
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/Viewfinder/BarcodeReaderOverlay.qml lomiri-camera-app-v4.1.1/qml/Viewfinder/BarcodeReaderOverlay.qml
+--- orig-v4.1.1/qml/Viewfinder/BarcodeReaderOverlay.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/Viewfinder/BarcodeReaderOverlay.qml	2026-10-25 23:02:29.713001990 +0200
+@@ -574,7 +574,7 @@
+ 
+ /*
+         // Wrong geometry when opened sideways
+-        rotation: Screen.angleBetween(Screen.primaryOrientation, Screen.orientation)
++        rotation: main.m52xqScreenAngle
+         Behavior on rotation {
+             RotationAnimator {
+                 duration: LomiriAnimation.BriskDuration
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/Viewfinder/TimedShootFeedback.qml lomiri-camera-app-v4.1.1/qml/Viewfinder/TimedShootFeedback.qml
+--- orig-v4.1.1/qml/Viewfinder/TimedShootFeedback.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/Viewfinder/TimedShootFeedback.qml	2026-10-25 23:21:31.679839456 +0200
+@@ -21,6 +21,8 @@
+ 
+ OrientationHelper {
+ 	id: timedShootFeedback
++	// m52xq: the window is turned by Lomiri
++	automaticOrientation: application.desktopMode
+     property real customRotation: 0
+     
+ 	anchors.fill: parent
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/Viewfinder/ViewFinderOverlay.qml lomiri-camera-app-v4.1.1/qml/Viewfinder/ViewFinderOverlay.qml
+--- orig-v4.1.1/qml/Viewfinder/ViewFinderOverlay.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/Viewfinder/ViewFinderOverlay.qml	2026-10-26 00:27:09.394150357 +0200
+@@ -163,8 +163,8 @@
+         var supportedViewfinderResolutions = camera.supportedViewfinderResolutions();
+ 
+         if (supportedViewfinderResolutions.length === 0) {
+-            console.log("updateViewfinderResolution: viewfinder resolutions is not known yet.");
+-            return;
++            // m52xq: libcamerasrc never tells camerabin its sizes: sizes it gives, by the aspect ratio of the target
++            supportedViewfinderResolutions = [Qt.size(1440, 1080), Qt.size(1920, 1080), Qt.size(1600, 1200)];
+         }
+ 
+         var targetResolution = stringToSize(
+@@ -299,7 +299,10 @@
+     }
+ 
+     function stringToSize(resolution) {
+-        var r = resolution ? resolution.split("x") : null;
++        // m52xq: null when no resolution is chosen yet (was a TypeError on r[0])
++        if (!resolution)
++            return null;
++        var r = resolution.split("x");
+         return Qt.size(r[0], r[1]);
+     }
+ 
+@@ -522,6 +525,9 @@
+     OrientationHelper {
+         id: bottomEdgeOrientation
+         transitionEnabled: bottomEdge.opened
++        // m52xq: the window is turned by Lomiri; turning the options panel again after a rotation left it with a
++        // stale size / position and the buttons (bound to it) moved to the middle of the screen
++        automaticOrientation: application.desktopMode
+ 
+         Panel {
+             id: bottomEdge
+@@ -944,12 +950,16 @@
+     Item {
+         id: controls
+ 
++        // m52xq: the window is turned by Lomiri now, so in landscape the buttons are a column on the right side
++        // (as the Ubuntu Touch camera has them), not a row at the bottom
++        readonly property bool m52xqSide: !application.desktopMode && viewFinderOverlay.width > viewFinderOverlay.height
++
+         anchors {
+             left: parent.left
+             right: parent.right
+         }
+         height: parent.height
+-        y: Screen.angleBetween(Screen.primaryOrientation, Screen.orientation) == 0 ? bottomEdge.position - bottomEdge.height : 0
++        y: main.m52xqScreenAngle == 0 ? bottomEdge.position - bottomEdge.height : 0
+         opacity: 1 - bottomEdge.progress
+         visible: opacity != 0.0
+         enabled: !bottomEdge.progress
+@@ -997,12 +1007,12 @@
+                            the orientation lock is not engaged.
+                            Ref.: https://bugs.launchpad.net/camera-app/+bug/1422762
+                         */
+-                        orientation = Screen.angleBetween(Screen.primaryOrientation, Screen.orientation);
++                        orientation = main.m52xqScreenAngle;
+                         break;
+                 }
+             }
+ 
+-            if (camera.position === Camera.FrontFace) {
++            if (camera.m52xqFront) {
+                 // Clockwise device becomes counter-clockwise camera
+                 orientation = 360 - orientation;
+             }
+@@ -1021,6 +1031,12 @@
+                 } else {
+                     camera.videoRecorder.outputLocation = StorageLocations.videosLocation;
+                 }
++                // m52xq: Qt took the "extension" of the file from the folder name (camera.ubports -> clip_N.ubports,
++                // players did not open it): a full file name with .mp4 (the container is MP4, see ViewFinderView.qml)
++                if (!main.contentExportMode) {
++                    var vdir = camera.videoRecorder.outputLocation.toString().replace(/^file:\/\//, "").replace(/\/+$/, "");
++                    camera.videoRecorder.outputLocation = vdir + "/VID_" + Qt.formatDateTime(new Date(), "yyyyMMdd_hhmmss") + ".mp4";
++                }
+ 
+                 if (camera.videoRecorder.recorderState == CameraRecorder.StoppedState) {
+                     camera.videoRecorder.setMetadata("Orientation", orientation);
+@@ -1129,12 +1145,10 @@
+             id: recordModeButton
+             objectName: "recordModeButton"
+ 
+-            anchors {
+-                right: shootButton.left
+-                rightMargin: units.gu(7.5)
+-                bottom: parent.bottom
+-                bottomMargin: units.gu(6)
+-            }
++            // m52xq: positions instead of anchors (anchors switched on rotation left buttons half way): a row at the
++            // bottom, in landscape a column on the right (this one below the shutter)
++            x: controls.m52xqSide ? shootButton.x + (shootButton.width - width) / 2 : shootButton.x - width - units.gu(7.5)
++            y: controls.m52xqSide ? shootButton.y + shootButton.height + units.gu(7.5) : parent.height - height - units.gu(6)
+ 
+             automaticOrientation: false
+             customRotation: main.staticRotationAngle
+@@ -1147,12 +1161,9 @@
+         ShootButton {
+             id: shootButton
+ 
+-            anchors {
+-                bottom: parent.bottom
+-                // account for the bottom shadow in the asset
+-                bottomMargin: units.gu(5) - units.dp(6)
+-                horizontalCenter: parent.horizontalCenter
+-            }
++            // m52xq: see recordModeButton (the margin accounts for the shadow in the asset)
++            x: controls.m52xqSide ? parent.width - width - (units.gu(5) - units.dp(6)) : (parent.width - width) / 2
++            y: controls.m52xqSide ? (parent.height - height) / 2 : parent.height - height - (units.gu(5) - units.dp(6))
+ 
+             enabled: (
+                 (camera.captureMode == Camera.CaptureVideo
+@@ -1180,12 +1191,9 @@
+             id: swapButton
+             objectName: "swapButton"
+ 
+-            anchors {
+-                left: shootButton.right
+-                leftMargin: units.gu(7.5)
+-                bottom: parent.bottom
+-                bottomMargin: units.gu(6)
+-            }
++            // m52xq: see recordModeButton (this one above the shutter in the column)
++            x: controls.m52xqSide ? shootButton.x + (shootButton.width - width) / 2 : shootButton.x + shootButton.width + units.gu(7.5)
++            y: controls.m52xqSide ? shootButton.y - height - units.gu(7.5) : parent.height - height - units.gu(6)
+ 
+             automaticOrientation: false
+             customRotation: main.staticRotationAngle
+diff -ruN '--exclude=.git' '--exclude=*.orig' '--exclude=*.rej' orig-v4.1.1/qml/Viewfinder/ViewFinderView.qml lomiri-camera-app-v4.1.1/qml/Viewfinder/ViewFinderView.qml
+--- orig-v4.1.1/qml/Viewfinder/ViewFinderView.qml	2025-08-11 23:42:01.000000000 +0300
++++ lomiri-camera-app-v4.1.1/qml/Viewfinder/ViewFinderView.qml	2026-10-26 00:38:08.903121525 +0200
+@@ -62,6 +62,11 @@
+         cameraState: Camera.UnloadedState
+         StateSaver.properties: "captureMode, position"
+         property bool failedToConnect: false
++        // m52xq: the libcamera camera in use (camera.position stays unknown with libcamerasrc) and its mounting:
++        // libcamerasrc reports no rotation; with the window turned by Lomiri the main sensor needs 270 and the front
++        // one 90 (anti-clockwise VideoOutput terms) plus the window angle, neither of them is mirrored (tried on the phone)
++        property bool m52xqFront: false
++        readonly property int m52xqSensorAngle: camera.orientation !== 0 ? camera.orientation : (m52xqFront ? 90 : 270)
+ 
+         function manualFocus(x, y) {
+             var normalizedPoint = viewFinder.mapPointToSourceNormalized(Qt.point(x, y - viewFinder.y));
+@@ -103,8 +108,10 @@
+                TODO: if optical zoom is available, maximumZoom should be the combined
+                range of optical and digital zoom and currentZoom should adjust the two
+                transparently based on the value. */
+-        property alias currentZoom: camera.digitalZoom
+-        property alias maximumZoom: camera.maximumDigitalZoom
++        // m52xq: camerabin's digital zoom crops with videocrop, which crashed (SIGSEGV) on the libcamerasrc frames:
++        // no zoom for now (the pinch does nothing)
++        property real currentZoom: 1.0
++        readonly property real maximumZoom: 1.0
+         property bool switchInProgress: false
+         property bool photoCaptureInProgress: false
+         property bool timedCaptureInProgress: false
+@@ -153,10 +160,18 @@
+                 viewFinderView.photoTaken(path);
+                 metricPhotos.increment();
+                 console.log("Picture saved as " + path);
++                // m52xq: denoise / sharpen / quality 92 in the background (as Megapixels does)
++                if (!main.contentExportMode)
++                    application.m52xqPostprocess(path);
+             }
+         }
+ 
+         videoRecorder {
++            // m52xq: no container was set: the file got the extension ".ubports" (players / Gallery did not open it);
++            // MP4 (H.264 + AAC, what encodebin made anyway) gives ".mp4"
++            mediaContainer: "video/quicktime, variant=(string)iso"
++            videoCodec: "video/x-h264"
++            audioCodec: "audio/mpeg, mpegversion=(int)4"
+             onRecorderStateChanged: {
+                 if (videoRecorder.recorderState === CameraRecorder.StoppedState) {
+                     metricVideos.increment()
+@@ -196,7 +211,16 @@
+                     viewFinder.width = 1;
+                     viewFinder.height = 1;
+                     camera.cameraState = Camera.LoadedState;
+-                    camera.position = (camera.position === Camera.FrontFace) ? Camera.BackFace : Camera.FrontFace;
++                    // m52xq: switch the libcamera camera, then another deviceId makes camerabin build its source again
++                    camera.m52xqFront = !camera.m52xqFront;
++                    application.selectLibcamera(camera.m52xqFront);
++                    var cams = QtMultimedia.availableCameras;
++                    for (var c = 0; c < cams.length; c++) {
++                        if (cams[c].deviceId !== camera.deviceId) {
++                            camera.deviceId = cams[c].deviceId;
++                            break;
++                        }
++                    }
+                     decideCameraState();
+                     viewFinderSwitcherRotation.angle = 180;
+                 }
+@@ -244,8 +268,8 @@
+                 }
+                 ScriptAction {
+                     script: {
+-                        viewFinder.width = Qt.binding(function () {return viewFinderSwitcher.width;});
+-                        viewFinder.height = Qt.binding(function () {return viewFinderSwitcher.height;});
++                        viewFinder.width = Qt.binding(function () {return viewFinder.feedTurned ? viewFinderSwitcher.height : viewFinderSwitcher.width;});
++                        viewFinder.height = Qt.binding(function () {return viewFinder.feedTurned ? viewFinderSwitcher.width : viewFinderSwitcher.height;});
+                     }
+                 }
+                 PropertyAction { target: viewFinderGrab; property: "visible"; value: false }
+@@ -266,26 +290,56 @@
+         VideoOutput {
+             id: viewFinder
+ 
+-            x: 0
+-            y: -viewFinderGeometry.y
+-            width: parent.width
+-            height: parent.height
++            // m52xq: Qt 5 VideoOutput turned by its own "orientation" fits the frame into a rectangle with swapped
++            // sides (a squeezed picture that did not reach the bottom): orientation stays 0 and the item itself is
++            // turned by feedAngle, with width / height swapped for 90 / 270
++            readonly property bool feedTurned: feedAngle === 90 || feedAngle === 270
++            anchors.centerIn: parent
++            width: feedTurned ? parent.height : parent.width
++            height: feedTurned ? parent.width : parent.height
++            rotation: (360 - feedAngle) % 360	// "orientation" is anti-clockwise, "rotation" clockwise
++            orientation: 0
+             source: camera
+             filters: cameraFilters
++            // m52xq: with PreserveAspectFit the frame came out ~2.6 times too small (a strip): fill the viewfinder
++            fillMode: VideoOutput.PreserveAspectCrop
++
++            // m52xq: at start the window gets its final size only after the first frames and the feed stayed
++            // distorted until something moved (a swipe): lay the frame out again once the sizes settle
++            function m52xqRelayout() {
++                fillMode = VideoOutput.Stretch;
++                fillMode = VideoOutput.PreserveAspectCrop;
++            }
++            onWidthChanged: m52xqRelayoutTimer.restart()
++            onHeightChanged: m52xqRelayoutTimer.restart()
++            onSourceRectChanged: m52xqRelayoutTimer.restart()
++            Timer {
++                id: m52xqRelayoutTimer
++                interval: 300
++                onTriggered: viewFinder.m52xqRelayout()
++            }
++            Connections {
++                target: camera
++                function onCameraStatusChanged() { m52xqRelayoutTimer.restart(); }
++            }
+             opacity: ((main.contentExportMode && viewFinderExportConfirmation.waitingForPictureCapture) ||
+                       (!main.contentExportMode && camera.photoCaptureInProgress && !camera.imageCapture.ready))
+                       ? 0.1 : 1.0
+ 
+-            orientation: {
++            property int feedAngle: {
+                 // Camera-app uses X-Lomiri-Rotates-Window-Contents, which means we're always in
+                 // native orientation. Thus, Screen.orientation isn't used here.
+ 
+-                if (camera.position === Camera.FrontFace) {
+-                    // Front facing cameras are flipped horizontally, compensate the mirror
+-                    return (360 - camera.orientation) % 360;
+-                } else {
+-                    return camera.orientation;
+-                }
++                // m52xq: libcamerasrc reports no sensor rotation (0), the sensors are mounted turned by 90 degrees
++                // (m52xq-virtualcam rotates them clockwise): a sideways viewfinder
++                // m52xq: the window follows the screen, the sensor stays with the device: turn back by the device angle
++                // (the front feed turns the other way: its window angle is subtracted - tried on the phone)
++                var sensorAngle = camera.m52xqFront
++                        ? (camera.m52xqSensorAngle + 360 - main.m52xqWindowAngle) % 360
++                        : (camera.m52xqSensorAngle + main.m52xqWindowAngle) % 360;
++                // m52xq: the front feed is not mirrored (m52xq-virtualcam: front counterclockwise, no flip): its own
++                // angle as it is, the UT "360 - angle" for mirrored front sensors turned it sideways
++                return sensorAngle;
+             }
+ 
+             transform: Rotation {
+@@ -308,9 +362,9 @@
+             anchors.centerIn: parent
+ 
+             cameraResolution: camera.viewfinder.resolution
+-            viewFinderHeight: viewFinder.height
+-            viewFinderWidth: viewFinder.width
+-            viewFinderOrientation: viewFinder.orientation
++            viewFinderHeight: viewFinderSwitcher.height
++            viewFinderWidth: viewFinderSwitcher.width
++            viewFinderOrientation: viewFinder.feedAngle
+         }
+ 
+         Loader {
+@@ -361,7 +415,9 @@
+         asynchronous: true
+         camera: camera
+         readOnly: viewFinderView.readOnly
+-        sensorOrientation: camera.orientation
++        // m52xq: photo rotation (tried on the phone): main camera device rotation + 270 (in landscape the frame is
++        // upright already: EXIF 0), front camera 360 - device rotation + 90
++        sensorOrientation: camera.m52xqFront ? 90 : 270
+         opacity: status == Loader.Ready && overlayVisible && !photoRollHint.enabled ? 1.0 : 0.0
+         readyForCapture: main.contentExportMode &&
+                          viewFinderExportConfirmation.waitingForPictureCapture ? false : camera.imageCapture.ready

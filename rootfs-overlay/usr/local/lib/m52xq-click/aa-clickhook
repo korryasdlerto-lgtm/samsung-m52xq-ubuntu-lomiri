@@ -1,0 +1,6 @@
+#!/bin/sh
+# m52xq (classic): /usr/bin/aa-clickhook (diverted to aa-clickhook.real) builds and loads AppArmor profiles of click apps as root
+# ("Hook command '/usr/bin/aa-clickhook' failed" when OpenStore installs an app as the user). The kernel has no AppArmor, so the
+# profiles are useless: with AppArmor (/sys/kernel/security/apparmor) the real hook runs, without it this does nothing.
+[ -d /sys/kernel/security/apparmor ] && exec /usr/bin/aa-clickhook.real "$@"
+exit 0

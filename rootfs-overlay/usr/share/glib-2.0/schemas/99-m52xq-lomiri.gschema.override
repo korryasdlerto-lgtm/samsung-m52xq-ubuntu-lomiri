@@ -1,0 +1,26 @@
+# классик (из pmOS 003/в3): обои с котом, значок кнопки лаунчера Ubuntu Touch, фон экрана приветствия
+[com.lomiri.Shell]
+# кот на квадратном холсте: PreserveAspectCrop показывает кота целиком в ландшафте и всю морду в портрете
+background-picture-uri='file:///usr/share/backgrounds/warty-final-ubuntu-square.png'
+always-show-osk=true
+# редактор скриншотов открывался после каждого снимка и не закрывался: только сохранять
+enable-screenshot-editor=false
+
+[com.lomiri.Shell.Greeter]
+# экран блокировки: обои Ubuntu Touch по умолчанию (рабочий стол — кот); разделение в Shell.qml (условие по showingGreeter)
+background-picture-uri='file:///usr/share/backgrounds/ubuntu-touch/ubuntu-touch-default.png'
+
+[com.lomiri.Shell.Launcher]
+logo-picture-uri='file:///usr/share/pixmaps/m52xq-ubuntu-touch-logo.svg'
+home-button-background-color='#E95420'
+items=['application:///org.kde.plasma.dialer.desktop', 'application:///org.kde.spacebar.desktop', 'application:///lomiri-addressbook-app.desktop', 'application:///lomiri-system-settings.desktop', 'application:///lomiri-camera-app.desktop', 'application:///morph-browser.desktop', 'application:///lomiri-gallery-app.desktop', 'application:///lomiri-filemanager-app.desktop', 'application:///lomiri-calculator-app.desktop', 'application:///lomiri-clock-app.desktop', 'application:///lomiri-calendar-app.desktop', 'application:///lomiri-weather-app.desktop', 'application:///lomiri-terminal-app.desktop', 'application:///lomiri-mediaplayer-app.desktop', 'application:///m52xq-sim-mode.desktop', 'application:///m52xq-reboot-recovery.desktop']
+
+# экранная клавиатура: русская и английская раскладки (глобус)
+[com.lomiri.keyboard.maliit]
+enabled-languages=['en', 'ru', 'emoji']
+active-language='ru'
+
+# звук при блокировке экрана: Lomiri останавливает (SIGSTOP) приложения не из этого списка (Stage.qml: exemptFromLifecycle),
+# вместе с ними замолкало воспроизведение; идентификатор — короткий appId (до «_»)
+[com.canonical.qtmir]
+lifecycle-exempt-appids=['music.ubports', 'morph-browser', 'youtube-web.mateo-salta', 'firefox.wayland']
