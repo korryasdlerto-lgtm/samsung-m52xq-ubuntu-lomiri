@@ -69,6 +69,7 @@ def screen_is_on():
 # reasons of the Lomiri Powerd plugin: 0 Unknown, 1 Inactivity, 2 PowerKey, 3 Proximity (on "off" Lomiri shows the lock
 # screen unless the reason is Proximity)
 INACTIVITY, POWERKEY, PROXIMITY = 1, 2, 3
+NOTIF_REASONS = (4, 5)	# Notification, SnapDecision
 
 
 def power_state(on, reason=POWERKEY):
@@ -90,11 +91,14 @@ def screen_off(touch, reason=POWERKEY):
 	b = open(BL).read().strip()
 	if b != '0' and not idle['dimmed']:	# dimmed: SAVED still has the real level
 		write(SAVED, b)
-	lock()
-	time.sleep(0.3)	# let the lock screen draw before the backlight goes
+	# classic в6: backlight first, then the lock. Lock first + 0.3 s showed the lock screen for ~0.55 s on the lit screen before
+	# it went dark (power key: "lock screen, then off"; inactivity: a flash before the sleep, 2026-11-08). Lomiri still draws
+	# with the backlight at 0 and hears "display off" only after OFF_DELAY, so the lock screen is ready for the next "on".
 	write(BL, 0)
+	lock()
 	if touch:
 		write(touch + '/inhibited', 1)
+	idle['notif_on'] = False
 	idle['dimmed'] = False
 	idle['off_since'] = time.monotonic()
 	# v2: Lomiri stops drawing on "display off" and loaded / drew its lock screen only after the next "on" (an empty
@@ -129,14 +133,16 @@ def screen_on(touch, reason=POWERKEY):
 	if touch:
 		write(touch + '/inhibited', 0)
 	b = saved_level()
+	# classic в6 (kernel v256): the brightness first. A panel that slept through the suspend (brightness 0, no flash) is woken
+	# up by it with an empty frame memory, so Lomiri must draw after it; a panel that did not sleep still holds the lock screen
+	# drawn when the screen went off (screen_off: lock under the dark backlight), not an old application frame.
+	write(BL, b)
 	if idle.pop('dark', False):
 		# after a dark resume the panel pipeline was kept off by the driver while Lomiri still believed the display was on: the
 		# backlight came up on a black screen (no picture) because Lomiri sent no new frame. A real off/on (reason Proximity: no lock)
 		power_state(False, PROXIMITY)
 		time.sleep(0.4)
 	power_state(True, reason)
-	time.sleep(0.25)	# a fresh frame before the backlight, not the last one from before the screen went off
-	write(BL, b)
 	emit_brightness()
 	idle['last'] = time.monotonic()
 	idle['dimmed'] = False
@@ -232,6 +238,7 @@ REPOWERD_XML = """<node><interface name="com.lomiri.Repowerd">
 <method name="clearSysState"><arg type="s" direction="in"/></method>
 <method name="requestWakeup"><arg type="s" direction="in"/><arg type="t" direction="in"/><arg type="s" direction="out"/></method>
 <method name="clearWakeup"><arg type="s" direction="in"/></method>
+<signal name="Wakeup"/>
 <method name="enableProximityHandling"><arg type="s" direction="in"/></method>
 <method name="disableProximityHandling"><arg type="s" direction="in"/></method>
 <method name="registerClient"><arg type="s" direction="in"/></method>
@@ -382,9 +389,15 @@ def repowerd_call(conn, sender, path, iface, method, params, inv):
 		log('Lomiri: setScreenPowerMode %s (reason %s), screen is %s' % (mode, reason, 'on' if screen_is_on() else 'off'))
 		touch = find(TOUCH)
 		if mode == 'on' and not screen_is_on():
+			idle['notif_on'] = reason in NOTIF_REASONS
 			threading.Thread(target=screen_on, args=(touch, reason), daemon=True).start()
 		elif mode == 'off' and screen_is_on():
-			threading.Thread(target=screen_off, args=(touch, reason), daemon=True).start()
+			# Lomiri sends "off" (4 Notification, 5 SnapDecision) when a notification or a dialog such as the Wi-Fi password closes: it only
+			# drops its own request. Off only if that request turned the screen on, else the screen locked while in use
+			if reason in NOTIF_REASONS and not idle.pop('notif_on', False):
+				log('Lomiri: off (reason %s) ignored, the screen was not turned on by it' % reason)
+			else:
+				threading.Thread(target=screen_off, args=(touch, reason), daemon=True).start()
 		inv.return_value(GLib.Variant('(b)', (True,)))
 	elif method == 'requestSysState':
 		bright['cookie'] += 1
@@ -395,14 +408,54 @@ def repowerd_call(conn, sender, path, iface, method, params, inv):
 		idle['sys'].pop(params.unpack()[0], None)
 		inv.return_value(None)
 	elif method == 'requestWakeup':
+		# classic в4: the clock alarm waits for the Wakeup signal at this time (seconds since the epoch); the RTC wakes a sleeping phone
 		bright['cookie'] += 1
-		inv.return_value(GLib.Variant('(s)', ('m52xq-%d' % bright['cookie'],)))
+		cookie = 'm52xq-%d' % bright['cookie']
+		name, when = params.unpack()
+		wakeups[cookie] = when
+		log('wakeup %s for %s in %d s' % (cookie, name, when - time.time()))
+		if len(wakeups) == 1:
+			GLib.timeout_add_seconds(1, wakeup_check)
+		wakeup_rtc()
+		inv.return_value(GLib.Variant('(s)', (cookie,)))
+	elif method == 'clearWakeup':
+		wakeups.pop(params.unpack()[0], None)
+		wakeup_rtc()
+		inv.return_value(None)
 	elif method == 'listSysRequests':
 		inv.return_value(GLib.Variant('(a(ssi))', ([(n, s, 1) for s, n in idle['sys'].values()],)))
 	elif method == 'getSysRequestStats':
 		inv.return_value(GLib.Variant('(a(ssuttt))', ([],)))
 	else:
 		inv.return_value(None)
+
+
+wakeups = {}
+WAKEALARM = '/sys/class/rtc/rtc0/wakealarm'
+
+
+def wakeup_rtc():
+	# relative ("+N"): the PMIC RTC counts from its own zero (1970 here), only the distance to the alarm matters
+	try:
+		with open(WAKEALARM, 'w') as f:
+			f.write('0')
+		if wakeups:
+			with open(WAKEALARM, 'w') as f:
+				f.write('+%d' % max(2, int(min(wakeups.values()) - time.time())))
+	except OSError as e:
+		log('wakealarm: %s' % e)
+
+
+def wakeup_check():
+	now = time.time()
+	due = [c for c, t in wakeups.items() if t <= now]
+	for c in due:
+		del wakeups[c]
+	if due:
+		log('wakeup %s now' % ' '.join(due))
+		bus.emit_signal(None, REPOWERD_PATH, REPOWERD, 'Wakeup', None)
+		wakeup_rtc()
+	return bool(wakeups)
 
 
 def repowerd_get(conn, sender, path, iface, prop):
@@ -553,7 +606,18 @@ def sound_running():
 				return True
 		except OSError:
 			pass
-	return False
+	return bluetooth_sound()
+
+
+def bluetooth_sound():
+	# classic в5: Bluetooth audio does not pass the ALSA card: the phone went to sleep 10 s after the lock and the speaker dropped
+	try:
+		uid = subprocess.run(['id', '-u', USER], capture_output=True, text=True, timeout=3).stdout.strip()
+		r = subprocess.run(['su', USER, '-s', '/bin/sh', '-c', 'XDG_RUNTIME_DIR=/run/user/%s pactl list short sinks' % uid],
+			capture_output=True, text=True, timeout=4)
+	except (OSError, subprocess.SubprocessError):
+		return False
+	return any('bluez' in l and 'RUNNING' in l for l in r.stdout.splitlines())
 
 
 def on_charger():

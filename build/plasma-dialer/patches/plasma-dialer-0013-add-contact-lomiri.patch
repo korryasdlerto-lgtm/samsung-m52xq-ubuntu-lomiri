@@ -1,0 +1,32 @@
+--- a/plasma-dialer/src/qml/ContactsPage.qml
++++ b/plasma-dialer/src/qml/ContactsPage.qml
+@@ -24,6 +24,13 @@
+     title: i18n("Contacts")
+     icon.name: "view-pim-contacts"
+     actions: [
++        // m52xq: contacts live in Lomiri's Contacts app (synced for the dialer by m52xq-contacts-sync): open it to add one
++        Kirigami.Action {
++            icon.name: "contact-new-symbolic"
++            displayHint: Kirigami.DisplayHint.IconOnly
++            text: i18n("Add contact")
++            onTriggered: Qt.openUrlExternally("addressbook:///create?phone=" + encodeURIComponent(""))
++        },
+         Kirigami.Action {
+             icon.name: "settings-configure"
+             displayHint: Kirigami.DisplayHint.IconOnly
+--- a/plasma-dialer/src/qml/DialerPage.qml
++++ b/plasma-dialer/src/qml/DialerPage.qml
+@@ -32,6 +32,13 @@
+     bottomPadding: 0
+ 
+     actions: [
++        // m52xq: contacts live in Lomiri's Contacts app (synced for the dialer by m52xq-contacts-sync): open it to add one
++        Kirigami.Action {
++            icon.name: "contact-new-symbolic"
++            displayHint: Kirigami.DisplayHint.IconOnly
++            text: i18n("Add contact")
++            onTriggered: Qt.openUrlExternally("addressbook:///create?phone=" + encodeURIComponent(dialerPage.numberEntryText))
++        },
+         Kirigami.Action {
+             id: settingsAction
+ 

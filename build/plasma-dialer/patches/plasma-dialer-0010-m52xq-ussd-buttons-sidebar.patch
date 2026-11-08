@@ -1,0 +1,81 @@
+--- a/plasma-dialer/src/qml/call/CallPageButton.qml
++++ b/plasma-dialer/src/qml/call/CallPageButton.qml
+@@ -47,15 +47,21 @@
+             Layout.preferredWidth: Kirigami.Units.gridUnit * 1.5
+             color: buttonRoot.toggledOn ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+             source: buttonRoot.iconSource
++            isMask: true	// m52xq: the icon takes the colour of the label (it stayed dark on the blue button)
+         }
+ 
+         Label {
+             Layout.alignment: Qt.AlignHCenter | Qt.AlignTop
++            Layout.fillWidth: true	// m52xq: long labels wrap inside the button
++            Layout.leftMargin: Kirigami.Units.smallSpacing
++            Layout.rightMargin: Kirigami.Units.smallSpacing
++            wrapMode: Text.WordWrap
++            maximumLineCount: 2
+             color: buttonRoot.toggledOn ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+             horizontalAlignment: Text.AlignHCenter
+-            elide: Text.ElideMiddle
++            elide: Text.ElideRight
+             text: buttonRoot.text
+-            font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.05
++            font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.95
+         }
+ 
+     }
+--- a/plasma-dialer/src/qml/call/CallPage.qml
++++ b/plasma-dialer/src/qml/call/CallPage.qml
+@@ -92,8 +92,8 @@
+             id: buttonRow
+ 
+             Layout.alignment: Qt.AlignHCenter
+-            Layout.maximumWidth: Kirigami.Units.gridUnit * 16
+-            Layout.minimumHeight: Kirigami.Units.gridUnit * 3.5
++            Layout.maximumWidth: Kirigami.Units.gridUnit * 22	// m52xq: long Russian labels
++            Layout.minimumHeight: Kirigami.Units.gridUnit * 5
+             Layout.preferredHeight: dialerButton.implicitHeight
+             spacing: Kirigami.Units.smallSpacing
+ 
+--- a/plasma-dialer/src/qml/components/Sidebar.qml
++++ b/plasma-dialer/src/qml/components/Sidebar.qml
+@@ -12,7 +12,7 @@
+     modal: false
+     collapsible: false
+     collapsed: false
+-    width: Kirigami.Units.gridUnit * 5
++    width: Kirigami.Units.gridUnit * 7	// m52xq: "Номеронабиратель" broke in the middle of the word
+     height: applicationWindow().height
+     edge: Qt.application.layoutDirection === Qt.RightToLeft ? Qt.RightEdge : Qt.LeftEdge
+     parent: QQC2.Overlay.overlay
+--- a/plasma-dialer/src/qml/USSDSheet.qml
++++ b/plasma-dialer/src/qml/USSDSheet.qml
+@@ -39,13 +39,6 @@
+ 
+     }
+ 
+-    Controls.BusyIndicator {
+-        anchors.centerIn: columnLayout
+-        width: Kirigami.Units.gridUnit * 2
+-        height: width
+-        visible: (ussdSheet.messageText === "")
+-    }
+-
+     ColumnLayout {
+         id: columnLayout
+ 
+@@ -67,6 +60,14 @@
+ 
+     }
+ 
++    // m52xq: after the layout: OverlaySheet takes its width from content.children[0], the indicator in front made the sheet 2 units wide
++    Controls.BusyIndicator {
++        anchors.centerIn: columnLayout
++        width: Kirigami.Units.gridUnit * 2
++        height: width
++        visible: (ussdSheet.messageText === "")
++    }
++
+     header: Kirigami.Heading {
+         text: isError ? i18n("USSD Error") : i18n("USSD Message")
+     }

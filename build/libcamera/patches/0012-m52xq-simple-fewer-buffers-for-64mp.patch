@@ -1,0 +1,54 @@
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -350,6 +350,8 @@
+ 	std::unique_ptr<DelayedControls> delayedCtrls_;
+ 
+ 	std::vector<std::unique_ptr<FrameBuffer>> conversionBuffers_;
++	/* m52xq: raw buffers between the sensor and the software ISP (2 for the 64 MP frames, see configure()) */
++	unsigned int numInternalBuffers_ = 4;
+ 	struct RequestOutputs {
+ 		Request *request;
+ 		std::map<const Stream *, FrameBuffer *> outputs;
+@@ -392,6 +394,9 @@
+ private:
+ 	static constexpr unsigned int kNumBuffersDefault = 4;
+ 	static constexpr unsigned int kNumBuffersMax = 32;
++	/* m52xq: photo frames of 24 MP and more (64 MP: 9240x6936 XRGB8888 = 256 MB per buffer) get 2 buffers, not 4 */
++	static constexpr unsigned int kNumBuffersLarge = 2;
++	static constexpr uint64_t kLargeFramePixels = 24000000;
+ 
+ 	/*
+ 	 * The SimpleCameraData instance is guaranteed to be valid as long as
+@@ -1392,6 +1397,9 @@
+ 			cfg.bufferCount = kNumBuffersDefault;
+ 		else if (bufferCount > kNumBuffersMax)
+ 			cfg.bufferCount = kNumBuffersMax;
++		if (static_cast<uint64_t>(cfg.size.width) * cfg.size.height >= kLargeFramePixels &&
++		    cfg.bufferCount > kNumBuffersLarge)
++			cfg.bufferCount = kNumBuffersLarge;
+ 
+ 		if (cfg.bufferCount != bufferCount) {
+ 			LOG(SimplePipeline, Debug)
+@@ -1606,7 +1614,12 @@
+ 	inputCfg.pixelFormat = videoFormat.toPixelFormat();
+ 	inputCfg.size = pipeConfig->captureSize;
+ 	inputCfg.stride = captureFormat.planes[0].bpl;
+-	inputCfg.bufferCount = kNumInternalBuffers;
++	/* m52xq: the 64 MP raw frames (9248x6936, 80 MB each) need only 2 internal buffers: about 670 MB less with the
++	 * 2 output buffers, the camera application was killed by the OOM killer saving 64 MP photos (2026-11-08) */
++	data->numInternalBuffers_ =
++		static_cast<uint64_t>(pipeConfig->captureSize.width) * pipeConfig->captureSize.height >= 24000000
++			? 2 : kNumInternalBuffers;
++	inputCfg.bufferCount = data->numInternalBuffers_;
+ 
+ 	if (data->converter_) {
+ 		return data->converter_->configure(inputCfg, outputCfgs);
+@@ -1655,7 +1668,7 @@
+ 		 * When using the converter allocate a fixed number of internal
+ 		 * buffers.
+ 		 */
+-		ret = video->allocateBuffers(kNumInternalBuffers,
++		ret = video->allocateBuffers(data->numInternalBuffers_,
+ 					     &data->conversionBuffers_);
+ 	} else {
+ 		/*

@@ -1,11 +1,11 @@
 # "Classic": Ubuntu 26.04 + Lomiri (Ubuntu Touch) on a mainline kernel for the Samsung Galaxy M52 5G (m52xq) — full manual
 
-Document version: 2026-11-02. Latest build: **classic v2** (2026-10-29).
+Document version: 2026-11-09. Latest release: **unofficial v1** (2026-11-09); changes: [CHANGES-v1.md](CHANGES-v1.md).
 
 ## 1. What this is
 
 - Device: Samsung Galaxy M52 5G, SM-M526B / SM-M526BR, Snapdragon 778G (SM7325, "yupik"), codename `m52xq`.
-- Kernel: **mainline Linux 7.1.2**, build **#430** (boot v241 + vendor_boot v238) — no Halium, libhybris or Android HAL:
+- Kernel: **mainline Linux 7.1.13** with device patches (section 6) — no Halium, libhybris or Android HAL:
   Mir runs on `gbm-kms` and Mesa, audio is ALSA/PipeWire, the modem is QMI through ModemManager.
 - System: a real **Ubuntu 26.04 LTS "resolute" arm64** root (built from scratch with `debootstrap`) + **Lomiri 0.6.2** and apps
   from the **UBports `26.04-1.x`** repository (`http://repo.ubports.com`).
@@ -14,31 +14,36 @@ Document version: 2026-11-02. Latest build: **classic v2** (2026-10-29).
   [samsung-m52xq-postmarketos-lomiri](https://github.com/korryasdlerto-lgtm/samsung-m52xq-postmarketos-lomiri)), moved to Ubuntu.
 - Personal hobby port, tested on one SM-M526B.
 
-Video: https://www.youtube.com/watch?v=xJV4l0g4Kwc (Ubuntu Touch 26.04 on the M52); back to Android: https://www.youtube.com/watch?v=0lgLbtdl4rA
+Video: https://www.youtube.com/watch?v=xJV4l0g4Kwc (installation); back to Android: https://www.youtube.com/watch?v=0lgLbtdl4rA&t=89s
 
-## 2. What works (as of 2026-10-29)
+## 2. What works (release unofficial v1, 2026-11-09)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Lomiri shell, first-run wizard | works | Plymouth splash, lock screen with a number pad |
+| Lomiri shell, first-run wizard | works | Plymouth splash, lock screen with a number pad; the language chosen in the wizard is applied to the shell, the quick settings and all apps |
 | Display, GPU for the shell and apps | works | own `libEGL_mesa` (Mesa 26.0.8, `bind-wayland-display`) — GPU compositing in apps (YouTube in Morph: 445 % → 30 % CPU) |
 | Touch, maliit keyboard | works | |
 | Auto-rotation | works | SSC through libssc (patched), iio-sensor-proxy |
 | Two SIMs, mobile data | works | ModemManager 1.25.95 + DSDS patches 0100–0103 (`build/modemmanager`), SIM indicator `m52xq-indicator-sim` |
-| Calls and SMS | works (as in pmOS) | plasma-dialer and Spacebar built from KDE sources with patches (2 SIMs, key tones, sheet width, persistent notification); daemons are user services `m52xq-*-daemon` |
+| Calls and SMS | works | plasma-dialer and Spacebar built from KDE sources with patches (2 SIMs, key tones, USSD, speaker/mute reset, "Add contact"); daemons are user services `m52xq-*-daemon`; speaker/earpiece switching in place (kernel); call bar with time and name; contacts shared with the Lomiri address book |
 | GPS in apps | works | ModemManager GNSS → gpsd → lomiri-location-service; rebuilt Qt Positioning "lomiri" plugin (`build/build-lls-plugin.sh`); per-app GeoClue permissions (`m52xq-gps-perms`) |
 | Wi-Fi, Bluetooth, BT audio | works | Bluetooth address from EFS (`m52xq-bt-addr.py`), PipeWire BlueZ module |
 | Audio, audio while locked | works | PipeWire; `lifecycle-exempt-appids` list (music keeps playing when locked) |
 | Video | works | Venus in the Lomiri media player (own Qt6 GStreamer plugin `build/qt6-multimedia`); Qt5 browsers decode on the CPU |
-| Camera | partial | `lomiri-camera-app` with patches + `m52xqcamsrc`; see below |
+| Camera | works, partial | `lomiri-camera-app` with patches + `m52xqcamsrc`: rear and front, 64 MP photos, digital zoom up to 4x, Venus video; not every lens and mode |
 | OpenStore (click) | works | click + `pkcon`, `aa-exec-click` stubs, AppArmor shim; `/home` and click apps on userdata |
-| Apps | works | YouTube, uNav, Pure Maps (Qt5 `qmlscene` built, PyOtherSide) |
+| Apps | works | YouTube, uNav, Pure Maps (Qt5 `qmlscene` built, PyOtherSide), TELEports (`libssl1.1` + push notifications QML module) |
+| Alarm clock | works | `lomiri-indicator-datetime`, wakes the phone from sleep through the RTC |
+| zram | works | 3 GB compressed swap (`m52xq-zram`) |
 | Flashlight, silent mode, settings links from the shade | works | |
-| Suspend | works | short power key press locks; wakes for calls/SMS |
+| Suspend | works | short power key press locks; wakes for calls, SMS and alarms; the panel stays dark on network wake-ups; Wi-Fi firmware sleeps when Wi-Fi is off |
 
-Not done / known issues: SIM icons in the shade through `lomiri-indicator-network` (we use our own indicator), the camera does not
-always start, auto-brightness, occasional stuck Synaptics touch after blanking, quiet audio recording, zram, Firefox (not installed),
-4K from the front camera does not play in the media player (Qt5), uNav CARTO tiles need a key. `apply-fixes.sh` has not yet been run on a clean image.
+Not working: fingerprint reader, VoLTE (calls use 2G/3G).
+
+Known issues: after a rotation from portrait to landscape the right half of the keyboard sometimes does not react (hide the
+keyboard and tap the text field again; in the wizard type the Wi-Fi password in portrait); TELEports has no Telegram calls;
+the quick settings may show some formats in English until the first reboot after the wizard; video in the browser is decoded
+on the CPU; auto-brightness; uNav CARTO tiles need a key.
 
 ## 3. Requirements
 
@@ -49,23 +54,28 @@ boot, vendor_boot, vbmeta. Build computer — section 7.
 ## 4. Installation
 
 ### 4.1. Flashable zip (TWRP)
-Archive `ubuntu-classic-26.04-m52xq-v2.zip`: 1 140 275 059 bytes, md5 `dc2860e4481f0b247bb9863f82773a48`; the image inside is
-5 880 578 048 bytes (md5 `0b3f52cb8c582086909512693b0bd225`), three chunks.
-**The archive is not published:** its root is a snapshot of one phone's live system (Bluetooth address, sensor registry, ssh keys,
-password hash). Build your own archive as in sections 7–9.
+Archive [ubuntu_touch_classic_26.04-m52xq-mainline-v1-UNOFFICIAL.zip](https://drive.google.com/file/d/1Z9dCERDZID4DJXgfY4CrCK9k98HZdGAa/view?usp=sharing):
+1 085 618 664 bytes, md5 `a3343884846751530f4a590e23e9275e`; the root image inside is split into two chunks. It contains no
+personal data, no SSH keys and no proprietary firmware.
 
-TWRP steps — as in the video and as for the postmarketOS port (Format Data → EXT4 → optionally UN1CA_3.1.0 → Format Data/EXT4 again → Install):
+The phone gets warm during the install; if the display already shows vertical coloured lines, do not install. Flash
+UN1CA_3.1.0 first for the maximum system partition size (after LineageOS 23 it is 1 GB smaller, the install still works).
+
+TWRP steps (as in the video):
 ```
 Wipe - Format Data - yes - enter - Back - Back - Advanced Wipe - Data - Repair or Change File System - Change File System - EXT4 -
-Swipe to Change - Back - Back - Back - Back - Back - Install - Select Storage - Micro SD card - ubuntu-classic-26.04-m52xq-v2.zip -
+Swipe to Change - Back - Back - Back - Back - Back - Install - Select Storage - Micro SD card - ubuntu_touch_classic_26.04-m52xq-mainline-v1-UNOFFICIAL.zip -
 Swipe to confirm Flash - Reboot System
 ```
-The installer is the postmarketOS port's one (section 4 of its manual): it grows `system` to 8 000 000 000 bytes, joins **three**
-chunks `samsung-m52xq.img.part-0…2` into `/dev/block/mapper/system`, writes boot v241 and vendor_boot v238, and takes the
-Bluetooth address (EFS), the modem firmware and the sensor registry (persist) from the phone.
+The installer is the postmarketOS port's one: it grows `system` to 8 000 000 000 bytes, joins the two chunks
+`samsung-m52xq.img.part-0…1` into `/dev/block/mapper/system`, writes boot, vendor_boot and dtbo (`dtbo-frag`), adds the IPA
+firmware of the phone to the boot ramdisk and copies from the phone, read-only: ADSP, GPU zap shader, IPA and Venus
+(`apnhlos`), Bluetooth firmware and sensor configs (`vendor`), the modem (`modem`), the sensor registry (`persist`) and the
+Bluetooth address (`EFS`). `vendor` must come from a Samsung-based ROM. Wait for `Updater process ended with RC=0`; the line
+`Failed to mount '/system_root'` at the end is normal. The first boot takes longer, then the wizard starts.
 
 ### 4.2. Testing without flashing: the image as `/data/rootfs.img`
-The boot loader (initramfs hook of boot v233+) prefers `/data/rootfs.img` when it exists:
+The boot loader (initramfs hook of the boot image) prefers `/data/rootfs.img` when it exists:
 ```sh
 # phone in TWRP
 adb push samsung-m52xq-classic.img /data/.rootfs.img.part
@@ -75,22 +85,32 @@ adb shell 'mv /data/.rootfs.img.part /data/rootfs.img && sync'
 ```
 
 ### 4.3. Password and access
-Password of `user` and `root` set by `apply-fixes.sh`: **1111** (`openssl passwd -6` + `chpasswd -e`; plain `chpasswd`
-fails — `pam_extrausers` does not know YESCRYPT). The Lomiri wizard may set an empty password — set your own the same way.
+Default password of `user` and `root` (4-digit screen unlock): **1111**; change it in System Settings - Security & Privacy
+(from a shell: `openssl passwd -6` + `chpasswd -e`; plain `chpasswd` fails — `pam_extrausers` does not know YESCRYPT).
 Shadow backup: `/etc/.m52xq-shadow-backup` (service `m52xq-password-restore`).
-USB access: `ssh user@172.16.42.1`.
+SSH over USB, about 30 s after boot: `ssh root@172.16.42.1`. SSH host keys are created on the first boot.
+Screenshot: Volume Up + Volume Down at the same time (saved to `~/Screenshots`).
 
 ## 5. Going back to Android
-Video: https://www.youtube.com/watch?v=0lgLbtdl4rA — steps as for the postmarketOS port (Format Data → EXT4 → LineageOS 23.2 → Format Data → Reboot).
-Stock firmware — with Odin (BL, AP, CP, CSC).
+Video: https://www.youtube.com/watch?v=0lgLbtdl4rA&t=89s. Enter TWRP with the power and volume buttons, copy the firmware zip
+to the microSD card first; the LineageOS and UN1CA zips rewrite boot, vendor_boot and dtbo themselves.
+```
+Wipe - Format Data - yes - enter - Back - Back - Back - Advanced Wipe - Data - Repair or Change File System - Change File System -
+EXT4 - Swipe to Change - Back - Back - Back - Back - Back - Install - lineage-23.2-2026-nightly-m52xq-signed.zip - Back - Back -
+Wipe - Format Data - enter - Reboot System
+```
+Latest LineageOS: https://download.lineageos.org/devices/m52xq/builds. Stock firmware — with Odin or Heimdall (BL, AP, CP, CSC).
 
 ## 6. Kernel
 
-Release [kernel-7.1.2-430](../../releases/tag/kernel-7.1.2-430) of this repository: `boot_v241_nfc.img` (md5 `f89bec95…`),
-`vendor_boot_v238_nfc_se9.img` (md5 `e1fb7dd3…`), `Image`, `config-7.1.2-430`, `modules-7.1.2-430.tar.gz`
-(Ubuntu layout `usr/lib/modules/7.1.2/…`: `ath11k_ahb.ko`, `extra/v4l2loopback.ko`, `extra/venus/*` — loaded by `m52xq-venus-load`), `SHA256SUMS`.
-The modules are exactly those of the classic v2 image. `MODVERSIONS` is off: install them only together with this boot image.
-Kernel source: [sc7280-mainline-linux-m52xq](https://github.com/korryasdlerto-lgtm/sc7280-mainline-linux-m52xq).
+Release [kernel-7.1.13](../../releases/tag/kernel-7.1.13) of this repository: `boot.img` (the one in the v1 zip, without
+the IPA firmware, which the installer adds from the phone), `vendor_boot.img` (DTB of `device-tree/`), `dtbo-frag.img`,
+`Image`, `config-7.1.13`, `modules-7.1.13.tar.gz` (Ubuntu layout `usr/lib/modules/7.1.13/…`, exactly the modules of the v1
+image), `SHA256SUMS`. `MODVERSIONS` is off: install the modules only together with this Image.
+Kernel source: [sc7280-mainline-linux-m52xq](https://github.com/korryasdlerto-lgtm/sc7280-mainline-linux-m52xq) (7.1.13) plus
+the three patches in `kernel/patches/`: in-place voice device switch (q6voice), panel kept asleep while the brightness is 0,
+ath11k power save with the radio off. Config: `kernel/config-7.1.13`. The earlier build: release
+[kernel-7.1.2-430](../../releases/tag/kernel-7.1.2-430), `kernel/config-7.1.2-430`.
 
 ## 7. Building from scratch: Ubuntu 26.04 + Lomiri root
 
@@ -114,33 +134,38 @@ ls /proc/sys/fs/binfmt_misc/ | grep qemu-aarch64          # must be there
 5. **m52xq hardware layer** — `image/build-04-hardware.sh`: from the postmarketOS-Lomiri v3 image (read-only,
    `losetup --sector-size 4096`) it copies `lib/modules` → `usr/lib/modules`, `lib/firmware` → `usr/lib/firmware`, `/usr/local`,
    udev rules, systemd units, sleep hooks, NM configs, audio UCM, `/usr/share/qcom` (the sensor registry is personal data, not in the repository).
-6. **v2 changes** — `apply-fixes.sh`:
+6. **Overlay and packages** — `apply-fixes.sh`:
    ```sh
    L=$(sudo losetup -f --show -b 4096 -P samsung-m52xq-classic.img); sudo mount ${L}p2 mnt-new
    sudo ./apply-fixes.sh $PWD/mnt-new     # rootfs-overlay (owned by root), .debs via chroot dpkg -i, password, groups, locale-gen, flags
    sync; sudo umount mnt-new; sudo losetup -d $L; md5sum samsung-m52xq-classic.img
    ```
    The `.deb` packages for dpkg (`debs*`) are built from `build/` (section 9) or downloaded from Ubuntu/UBports — the `.deb` files are not in the repository.
+   The v1 release image was made differently: a snapshot of a phone with all fixes installed, with personal data, SSH keys,
+   the machine ID and proprietary firmware removed and checked by a pattern scan; then split into two chunks.
 
 ## 8. Repository layout
 
 | Folder | Contents |
 |---|---|
-| `installer/META-INF` | TWRP installer (three chunks), banner "classic v2" |
-| `rootfs-overlay/` | every v2 file over the root (scripts, services, QML, configs, Plymouth); binaries are listed in `EXCLUDED-FILES.txt` with md5 |
+| `installer/META-INF` | TWRP installer (two chunks), banner "classic v1" |
+| `rootfs-overlay/` | every file of the port over the root (scripts, services, QML, configs, Plymouth); binaries, proprietary firmware, fonts, wallpapers and sounds are listed in `EXCLUDED-FILES.txt` with size and md5 |
+| `kernel/` | kernel configs and `patches/` on top of the kernel repository |
+| `device-tree/` | DTS of the vendor_boot DTB (upstream-style file + local additions) |
 | `apply-fixes.sh` | applies the overlay and packages to a mounted image |
 | `image/` | root and image build scripts (`build-01…04`, chroot, UBports, upload to the phone) |
 | `build/` | sources, patches and scripts of every rebuilt program (section 9) |
-| `docs/` | this manual (RU/EN), `ИНСТРУКЦИЯ.md` (all commands step by step), `ПРАВКИ.md` (change log) |
+| `docs/` | this manual (RU/EN), `CHANGES-v1.md` / `CHANGES-v1-RU.md`, `ИНСТРУКЦИЯ.md` (all commands step by step), `ПРАВКИ.md` (change log) |
 
 ## 9. Rebuilt programs (`build/`)
 
 | Folder | What and why |
 |---|---|
 | `mesa` | `libEGL_mesa` 26.0.8 with `-Dlegacy-wayland=bind-wayland-display` — GPU in Lomiri apps (VERSION = full package version) |
-| `modemmanager` | ModemManager 1.25.95 + patches 0100–0103: primary slot and 2G SIM paths, a second modem object for SIM 2, data SIM choice, non-fatal SIM 2 attach |
-| `plasma-dialer`, `spacebar` | dialer and SMS from KDE sources for Ubuntu: 2 SIMs, key tones (canberra, Lomiri setting), sheet width, persistent notification, read state |
-| `libcamera`, `lomiri-camera-app`, `m52xqcamsrc` | camera: soft-ISP patches, tap to focus, 4K video, 16 MP binned, options overlay; GStreamer source with Venus |
+| `modemmanager` | ModemManager 1.25.95 + patches 0100–0103: primary slot and 2G SIM paths, a second modem object for SIM 2, data SIM choice, non-fatal SIM 2 attach; 0104: netlink use-after-free (crash on data connects) |
+| `plasma-dialer`, `spacebar` | dialer and SMS from KDE sources for Ubuntu: 2 SIMs, key tones (canberra, Lomiri setting), sheet width, persistent notification, read state; USSD and landscape buttons (0010), speaker/mute reset at call end (0012), "Add contact" (0013); 0011 is kept but not built |
+| `kpeople` | KPeople 6.24 + `0001-m52xq-serialize-persondb-access.patch`: one lock for the contacts database (dialer crash) |
+| `libcamera`, `lomiri-camera-app`, `m52xqcamsrc` | camera: soft-ISP patches, tap to focus, 4K video, 16 MP binned, options overlay, fewer buffers for 64 MP (0012); GStreamer source with Venus and digital zoom |
 | `qt6-multimedia` | Qt6 Multimedia GStreamer backend (missing in Ubuntu 26.04) — Venus video in the Lomiri player |
 | `qmlscene5` | Qt5 `qmlscene` (not shipped in 26.04) — for YouTube/uNav/Pure Maps from OpenStore |
 | `build-lls-plugin.sh` | Qt Positioning "lomiri" plugin (lomiri-location-service) — GPS in apps |
@@ -165,6 +190,13 @@ ls /proc/sys/fs/binfmt_misc/ | grep qemu-aarch64          # must be there
 | `m52xq-plymouth-fallback` | quit Plymouth if the greeter did not |
 | `pkcon`, `aa-exec-click` | stubs for installing OpenStore click packages |
 | `m52xq-unav-tiles` | tile source for uNav |
+| `90-m52xq-lang` (user environment generator), `m52xq-session-lang` | `LANG`/`LANGUAGE` of the user session from the account language |
+| `m52xq-voicecall`, `m52xq-voice-mixers.sh`, `m52xq-tfa-guard`, `m52xq-audio-rescue` | call audio routes and in-place device switch, amplifier retry, sound card rescue after boot |
+| `m52xq-contacts-sync` (user) | Lomiri address book → vCards for the dialer |
+| `m52xq-bt-firmware` | Bluetooth firmware load after the rfkill unblock |
+| `m52xq-wpss-guard`, `m52xq-wpss-restart`, `m52xq-wl-reset` | Wi-Fi firmware crash guard and clean restart |
+| `m52xq-zram` | 3 GB zram swap |
+| `m52xq-ssh-hostkeys`, `m52xq-password-hint` | SSH host keys on the first boot; number pad for the 4-digit password |
 
 ## 11. Pitfalls (short)
 
@@ -176,4 +208,4 @@ ls /proc/sys/fs/binfmt_misc/ | grep qemu-aarch64          # must be there
 - Editing launcher entries in `/custom/xdg/data/applications` makes Lomiri flicker — do not rewrite unchanged files.
 
 ## 12. Credits
-Ubuntu, UBports and Lomiri; postmarketOS; KDE (plasma-dialer, Spacebar); the mainline Linux developers for Qualcomm SC7280/QCM6490.
+Ubuntu, UBports and Lomiri; postmarketOS; KDE (plasma-dialer, Spacebar, KPeople); the mainline Linux developers for Qualcomm SC7280/QCM6490.

@@ -1,7 +1,7 @@
 #!/bin/sh
-# libcamera 0.7.2 (upstream v0.7.2) + 10 патчей pmOS (в3/build-libcamera: simple soft-ISP, quad-Bayer, remosaic Tetracell s5kgw3 для 16/64 Мп,
+# libcamera 0.7.2 (upstream v0.7.2) + 10 патчей pmOS и 0012 (меньше буферов для 64 Мп) (simple soft-ISP, quad-Bayer, remosaic Tetracell s5kgw3 для 16/64 Мп,
 # AGC без записи в датчик и др.; все ложатся на 0.7.2 без правок) -> три .deb с теми же именами, что у Ubuntu: libcamera0.7, libcamera-ipa,
-# gstreamer1.0-libcamera (версия 0.7.2+m52xq1; control берётся из пакетов Ubuntu, файлы заменяются своими). Результат — out/.
+# gstreamer1.0-libcamera (версия 0.7.2+m52xq2; control берётся из пакетов Ubuntu, файлы заменяются своими). Результат — out/.
 # Chroot классик/mesa-build-root2 (qemu aarch64). Лог: build.log. Использование: ./build.sh
 set -e
 B=$(cd "$(dirname "$0")" && pwd); R=$B/../../mesa-build-root2
@@ -12,7 +12,7 @@ sudo chroot $R sh -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 sudo chroot $R sh -c '
 set -e
 cd /build-pd && rm -rf libcamera-v0.7.2 lc-dest lc-pkg && tar xf libcamera-v0.7.2.tar.gz && cd libcamera-v0.7.2
-for f in ../000*.patch ../0010-*.patch; do patch -p1 -s < $f; done
+for f in ../000*.patch ../0010-*.patch ../0012-*.patch; do patch -p1 -s < $f; done
 meson setup output --prefix=/usr --libdir=lib/aarch64-linux-gnu --libexecdir=libexec/aarch64-linux-gnu --buildtype=release -Dpipelines=simple -Dipas=simple -Dgstreamer=enabled -Dv4l2=false -Dcam=disabled -Dqcam=disabled -Dlc-compliance=disabled -Dpycamera=disabled -Ddocumentation=disabled -Dtest=false -Dwerror=false 2>&1 | tail -15
 ninja -C output -j8 2>&1 | tail -5
 DESTDIR=/build-pd/lc-dest meson install --no-rebuild -C output 2>&1 | tail -2
@@ -34,10 +34,10 @@ for p in libcamera0.7 libcamera-ipa gstreamer1.0-libcamera; do
   gstreamer1.0-libcamera)
     mkdir -p x-$p/usr/lib/aarch64-linux-gnu; cp -a $L/usr/lib/aarch64-linux-gnu/gstreamer-1.0 x-$p/usr/lib/aarch64-linux-gnu/ ;;
   esac
-  sed -i "s/^Version: .*/Version: 0.7.2+m52xq1/" x-$p/DEBIAN/control
+  sed -i "s/^Version: .*/Version: 0.7.2+m52xq2/" x-$p/DEBIAN/control
   rm -f x-$p/DEBIAN/md5sums
-  dpkg-deb -b x-$p ${p}_0.7.2+m52xq1_arm64.deb >/dev/null
-  echo "== $p"; dpkg-deb -c ${p}_0.7.2+m52xq1_arm64.deb | awk "{print \$6}" | grep -v "/$" | grep -v share/doc | head -20
+  dpkg-deb -b x-$p ${p}_0.7.2+m52xq2_arm64.deb >/dev/null
+  echo "== $p"; dpkg-deb -c ${p}_0.7.2+m52xq2_arm64.deb | awk "{print \$6}" | grep -v "/$" | grep -v share/doc | head -20
 done
 ls -l *m52xq1*.deb
 '

@@ -1,0 +1,213 @@
+/*
+ * Copyright (C) 2013-2016 Canonical Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 3.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+import QtQuick 2.15
+import QtQuick.Layouts 1.1
+import QMenuModel 1.0 as QMenuModel
+import Lomiri.Components 1.3
+import Wizard 0.1
+import Lomiri.Connectivity 1.0
+import ".." as LocalComponents
+import "../../Components"
+
+LocalComponents.Page {
+    id: wifiPage
+    objectName: "wifiPage"
+
+    title: i18n.tr("Connect to Wi‑Fi")
+    forwardButtonSourceComponent: forwardButton
+
+    readonly property bool connected: Connectivity.online
+    // m52xq: the page is always shown: mobile data comes up by itself on a clean install and the step used to vanish, the button skips it
+    skip: false
+
+    function getExtendedProperty(object, propertyName, defaultValue) {
+        if (object && object.hasOwnProperty(propertyName)) {
+            return object[propertyName];
+        }
+        return defaultValue;
+    }
+
+    function getAPIcon(adHoc, signalStrength, secure) {
+        var imageName = "nm-no-connection";
+
+        if (adHoc) {
+            imageName = "nm-adhoc";
+        } else if (signalStrength == 0) {
+            imageName = "nm-signal-00";
+        } else if (signalStrength <= 25) {
+            imageName = "nm-signal-25";
+        } else if (signalStrength <= 50) {
+            imageName = "nm-signal-50";
+        } else if (signalStrength <= 75) {
+            imageName = "nm-signal-75";
+        } else if (signalStrength <= 100) {
+            imageName = "nm-signal-100";
+        }
+
+        if (secure) {
+            imageName += "-secure";
+        }
+        return imageName;
+    }
+
+    QMenuModel.AyatanaMenuModel {
+        id: menuModel
+        busName: "com.lomiri.indicator.network"
+        actions: { "indicator": "/com/lomiri/indicator/network" }
+        menuObjectPath: "/com/lomiri/indicator/network/phone_wifi_settings"
+    }
+
+    Component {
+        id: accessPointComponent
+        ListItem {
+            id: accessPoint
+            objectName: "accessPoint_" + apName.text.toLowerCase().replace(/\s+/g, '_')
+            highlightColor: backgroundColor
+            enabled: menuData && menuData.sensitive || false
+            divider.colorFrom: dividerColor
+            divider.colorTo: backgroundColor
+
+            property QtObject menuData: null
+            property var lomiriMenuModel: menuModel
+            property var extendedData: menuData && menuData.ext || undefined
+            property var strengthAction: QMenuModel.AyatanaMenuAction {
+                model: lomiriMenuModel
+                index: menuIndex
+                name: getExtendedProperty(extendedData, "xAyatanaWifiApStrengthAction", "")
+            }
+            readonly property bool secure: getExtendedProperty(extendedData, "xAyatanaWifiApIsSecure", false)
+            readonly property bool adHoc: getExtendedProperty(extendedData, "xAyatanaWifiApIsAdhoc", false)
+            readonly property bool isConnected: menuData && menuData.actionState
+            readonly property bool isEnterprise: getExtendedProperty(extendedData, "xAyatanaWifiApIsEnterprise", false)
+            readonly property int signalStrength: strengthAction.valid ? strengthAction.state : 0
+            property int menuIndex: -1
+
+            function loadAttributes() {
+                if (!lomiriMenuModel || menuIndex == -1) return;
+                lomiriMenuModel.loadExtendedAttributes(menuIndex, {'x-ayatana-wifi-ap-is-adhoc': 'bool',
+                                                          'x-ayatana-wifi-ap-is-secure': 'bool',
+                                                          'x-ayatana-wifi-ap-is-enterprise': 'bool',
+                                                          'x-ayatana-wifi-ap-strength-action': 'string'});
+            }
+
+            Icon {
+                id: apIcon
+                anchors {
+                    left: parent.left
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: column.anchors.leftMargin == 0 ? staticMargin : 0
+                }
+                height: units.gu(2.5)
+                width: height
+                name: getAPIcon(accessPoint.adHoc, accessPoint.signalStrength, accessPoint.secure)
+                color: textColor
+            }
+
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: apIcon.right
+                anchors.leftMargin: units.gu(2)
+                Label {
+                    id: apName
+                    text: menuData && menuData.label || ""
+                    font.weight: accessPoint.isConnected ? Font.Normal : Font.Light
+                    fontSize: "medium"
+                    color: textColor
+                }
+                Label {
+                    id: connectedLabel
+                    text: i18n.tr("Connected")
+                    font.weight: Font.Light
+                    fontSize: "small"
+                    color: okColor
+                    visible: accessPoint.isConnected
+                }
+            }
+
+            onClicked: {
+                lomiriMenuModel.activate(menuIndex);
+                listview.positionViewAtBeginning();
+            }
+        }
+    }
+
+    ColumnLayout {
+        id: column
+        spacing: units.gu(2)
+        anchors {
+            fill: content
+            topMargin: customMargin
+            leftMargin: wideMode ? parent.leftMargin : 0
+            rightMargin: wideMode ? parent.rightMargin : 0
+        }
+
+        Label {
+            id: label
+            Layout.fillWidth: true
+            Layout.fillHeight: false
+            anchors.leftMargin: column.anchors.leftMargin == 0 ? staticMargin : 0
+            font.weight: Font.Light
+            color: textColor
+            wrapMode: Text.Wrap
+            text: listview.count > 0 ? i18n.tr("Available Wi-Fi networks")
+                                     : i18n.tr("No available Wi-Fi networks")
+        }
+
+        ListView {
+            id: listview
+            objectName: "accessPointsListView"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            model: menuModel
+
+            delegate: Loader {
+                readonly property bool isAccessPoint: model.type === "lomiri.widgets.systemsettings.tablet.accesspoint"
+                readonly property bool isConnected: item && item.menuData && item.menuData.actionState
+                readonly property bool isEnterprise: item && item.isEnterprise
+
+                height: !!sourceComponent ? (isConnected ? units.gu(9) : units.gu(7)) : 0
+                anchors.left: parent.left
+                anchors.right: parent.right
+
+                asynchronous: true
+                sourceComponent: {
+                    if (isAccessPoint && !isEnterprise) {
+                        return accessPointComponent;
+                    }
+                    return null;
+                }
+
+                onLoaded: {
+                    item.menuData = Qt.binding(function() { return model; });
+                    item.menuIndex = Qt.binding(function() { return index; });
+                    item.loadAttributes();
+                }
+            }
+        }
+    }
+
+    Component {
+        id: forwardButton
+        LocalComponents.StackButton {
+            text: (root.connected || listview.count === 0) ? i18n.tr("Next") : i18n.tr("Skip")
+            onClicked: {
+                pageStack.next();
+            }
+        }
+    }
+}

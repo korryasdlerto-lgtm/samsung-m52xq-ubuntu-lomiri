@@ -1,0 +1,22 @@
+#!/bin/sh
+# m52xq (убунтутач24/003): the Lomiri session tinydm starts (usr/share/wayland-sessions/m52xq-lomiri.desktop).
+# On 002 these came from m52xq-lomiri.service; here tinydm runs the session, so they are set here:
+#   PATH first: usr/local/lib/m52xq/lomiri-bin (lomiri --mode=full-shell + the indicator services; locale -a with .utf8)
+#   QML2_IMPORT_PATH: the Lomiri.SystemSettings.* modules (and our Update stub) for the first-run wizard
+#   GRID_UNIT_PX=21: the UI scale of a 6.7" 1080x2400 phone (lomiri-deviceinfo alone is not read by the UI toolkit)
+#   LANG: the language chosen in the first-run wizard / System Settings (AccountsService "Language", read over D-Bus: the file is root-only); without it the
+#   session ran with the en_US.UTF-8 of the login environment and System Settings and the shade stayed English
+m52xq_lang=$(busctl --system get-property org.freedesktop.Accounts "/org/freedesktop/Accounts/User$(id -u)" \
+	org.freedesktop.Accounts.User Languages 2>/dev/null | sed -n 's/^as [1-9][0-9]* "\([^"]*\)".*/\1/p')
+# classic в5: Languages, not Language: the wizard and Settings write Languages, Language stays "en" without ~/.pam_environment
+# AccountsService reports en_US as "en": there is no en.UTF-8 locale
+[ "$m52xq_lang" = en ] && m52xq_lang=en_US
+if [ -n "$m52xq_lang" ]; then
+	export LANG="${m52xq_lang%%.*}.UTF-8" LANGUAGE="${m52xq_lang%%.*}"
+else
+	export LANG="${LANG:-C.UTF-8}"
+fi
+export PATH="/usr/local/lib/m52xq/lomiri-bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export QML2_IMPORT_PATH="/usr/lib/lomiri-system-settings/private${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+export GRID_UNIT_PX=21
+exec /usr/bin/start_lomiri "$@"

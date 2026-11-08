@@ -1,0 +1,48 @@
+#!/bin/sh
+# m52xq: reload the Bluetooth firmware once /lib/firmware on the rootfs is available, then set this phone's BD address.
+# hci_uart_qca is built in and runs its setup at ~2 s, before the rootfs (qca/msbtfw11.mbn, msnv11.bin) and before the shared
+# WPSS are up, so the first setup fails and the driver keeps retrying for minutes. An "unbind" at that time sleeps in
+# hci_unregister_dev (D state, ~8 min seen) and blocks every suspend ("tasks refusing to freeze").
+# So: while Bluetooth is switched off (rfkill) do nothing; rebind once when it is switched on.
+# classic в7 (2026-11-08): the wait was `rfkill event | while ...; do blocked || break; done`: the pipeline only ended on the NEXT
+# rfkill event (rfkill keeps running after the break), so the rebind came 42 s after the user switched Bluetooth on, after the
+# kernel's own setup on the unblock had failed ("Reading QCA version information failed (-110)") and the switch had gone off.
+# Now: wait for the unblock on /dev/rfkill directly, let that kernel setup finish (never unbind during a setup: that hung the
+# phone, 2026-11-06), and rebind only if the controller did not come up.
+d=/sys/bus/serial/drivers/hci_uart_qca
+rebind() {
+	[ -e $d/serial0-0 ] && echo serial0-0 > $d/unbind
+	sleep 1
+	echo serial0-0 > $d/bind
+	/usr/bin/python3 /usr/local/bin/m52xq-bt-addr.py
+}
+blocked() { rfkill list bluetooth 2>/dev/null | grep -q 'Soft blocked: yes'; }
+up() { hciconfig hci0 2>/dev/null | grep -q 'UP RUNNING'; }
+setup_failed_since() { journalctl -k -b --no-pager --since "@$1" 2>/dev/null | grep -q -E 'hci0: (Reading QCA version information failed|QCA setup on UART failed|Setup failed|command 0x[0-9a-f]+ tx timeout)'; }
+if blocked; then
+	/usr/bin/python3 - <<'PY'
+import os, subprocess
+fd = os.open('/dev/rfkill', os.O_RDONLY)
+while True:
+    os.read(fd, 8)	# struct rfkill_event: one event per read, blocks without CPU
+    if b'Soft blocked: yes' not in subprocess.run(['rfkill', 'list', 'bluetooth'], capture_output=True).stdout:
+        break
+PY
+	t0=$(date +%s)
+	echo "m52xq-bt-firmware: Bluetooth switched on, waiting for the kernel setup"
+	i=0
+	while [ $i -lt 20 ]; do
+		if up; then
+			echo "m52xq-bt-firmware: controller up after ${i} s, setting the address"
+			/usr/bin/python3 /usr/local/bin/m52xq-bt-addr.py
+			exit 0
+		fi
+		setup_failed_since $t0 && break
+		sleep 1
+		i=$((i + 1))
+	done
+	sleep 1	# the failed setup has returned
+	echo "m52xq-bt-firmware: controller not up after the kernel setup (${i} s), reloading the firmware"
+fi
+rebind
+exit 0

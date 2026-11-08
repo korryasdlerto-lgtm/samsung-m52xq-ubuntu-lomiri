@@ -7,7 +7,8 @@ S=/run/m52xq-rootsrc/userdata/m52xq
 mountpoint -q /run/m52xq-rootsrc/userdata || exit 1
 mkdir -p $S/home $S/click
 [ -e $S/home/.m52xq-copied ] || { cp -a /home/. $S/home/ && touch $S/home/.m52xq-copied; }
-[ -e $S/click/.m52xq-copied ] || { [ -d /opt/click.ubuntu.com ] && cp -a /opt/click.ubuntu.com/. $S/click/; touch $S/click/.m52xq-copied; }
+[ -e $S/click/.m52xq-copied ] && mv $S/click/.m52xq-copied $S/.click-copied	# classic в5: click takes every entry of this directory for a package
+[ -e $S/.click-copied ] || { [ -d /opt/click.ubuntu.com ] && cp -a /opt/click.ubuntu.com/. $S/click/; touch $S/.click-copied; }
 # OpenStore asks libclick for the packages of the user "phablet" (hard-coded, Ubuntu Touch) -> empty list, every app stayed "Install"
 # after installing; "phablet" is an alias of our user. click installs with pkcon (m52xq stand-in) run as the user, so it must own the db.
 mkdir -p $S/click/.click/users; ln -sfn user $S/click/.click/users/phablet

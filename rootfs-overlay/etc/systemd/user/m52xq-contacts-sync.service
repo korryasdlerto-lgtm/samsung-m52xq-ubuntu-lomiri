@@ -1,0 +1,9 @@
+[Unit]
+Description=M52XQ: Lomiri contacts for plasma-dialer (vCard files for KPeople)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/m52xq-contacts-sync
+
+[Install]
+WantedBy=default.target

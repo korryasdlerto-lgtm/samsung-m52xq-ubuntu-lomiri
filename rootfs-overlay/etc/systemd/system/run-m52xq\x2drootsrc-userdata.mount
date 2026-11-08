@@ -1,0 +1,15 @@
+[Unit]
+Description=M52XQ: the userdata partition for /home and /opt/click.ubuntu.com (the kernel 7.1.13 initramfs does not mount it)
+DefaultDependencies=no
+Conflicts=umount.target
+Before=m52xq-userdata-dirs.service home.mount opt-click.ubuntu.com.mount local-fs.target umount.target
+
+[Mount]
+What=/dev/disk/by-partlabel/userdata
+Where=/run/m52xq-rootsrc/userdata
+Type=ext4
+Options=noatime,nosuid,nodev
+TimeoutSec=60
+
+[Install]
+WantedBy=local-fs.target

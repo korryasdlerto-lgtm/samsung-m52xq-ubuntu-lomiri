@@ -4,5 +4,6 @@
 set -e
 cd "$(dirname "$0")"
 IMG=samsung-m52xq-classic.img
-{ cat /tmp/claude-1000/-home-sasha-Templates---------/21f124fa-4095-4276-a809-ddade279b463/scratchpad/.pwu; echo; gzip -1 -c $IMG; } | sshpass -f /tmp/claude-1000/-home-sasha-Templates---------/21f124fa-4095-4276-a809-ddade279b463/scratchpad/.pwu ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR user@172.16.42.1 "sudo -S -p '' sh -c 'gunzip > /mnt/userdata/.rootfs.img.part'"
+PWF=${PWF:?file with the phone user password}   # пароль user телефона, одна строка
+{ cat $PWF; echo; gzip -1 -c $IMG; } | sshpass -f $PWF ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR user@172.16.42.1 "sudo -S -p '' sh -c 'gunzip > /mnt/userdata/.rootfs.img.part'"
 echo "залито: $(date +%T)"

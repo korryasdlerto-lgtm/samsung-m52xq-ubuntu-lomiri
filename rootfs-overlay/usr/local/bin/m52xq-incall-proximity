@@ -43,6 +43,7 @@ CALL_BLANK_STATES = {1, 2, 4}   # MMCallState: dialing, ringing-out, active
 # v4: any live call (dialing, ringing-out, ringing-in, active, held, waiting) -> gsettings org.m52xq.Calls active: Lomiri's Shell.qml
 # (callManager.hasCalls replacement) shows the dialer over the lock screen while it is true
 CALL_ANY_STATES = {1, 2, 3, 4, 5, 6}
+CALL_STATE_ACTIVE = 4
 CALLS_SCHEMA = 'org.m52xq.Calls'
 USER_BUS = 'unix:path=/run/user/10000/bus'
 TOUCH_NAME = 'Synaptics TCM Oncell Touchscreen'
@@ -267,8 +268,61 @@ class InCall:
         except OSError as e:
             log('calls flag: %s' % e)
 
+    def live_calls(self):
+        """[(path, state, number)] of the calls in CALL_ANY_STATES"""
+        calls = []
+        try:
+            res = self.bus.call_sync(MM, '/org/freedesktop/ModemManager1',
+                                     'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects',
+                                     None, GLib.VariantType('(a{oa{sa{sv}}})'),
+                                     Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            return calls
+        for ifaces in res.unpack()[0].values():
+            voice = ifaces.get(MM + '.Modem.Voice')
+            if not voice:
+                continue
+            for path in voice.get('Calls', []):
+                try:
+                    props = self.bus.call_sync(MM, path, 'org.freedesktop.DBus.Properties', 'GetAll',
+                                               GLib.Variant('(s)', (MM + '.Call',)),
+                                               GLib.VariantType('(a{sv})'), Gio.DBusCallFlags.NONE, 2000, None).unpack()[0]
+                except GLib.Error:
+                    continue
+                if props.get('State') in CALL_ANY_STATES:
+                    calls.append((path, props.get('State'), props.get('Number', '') or ''))
+        return calls
+
+    def set_calls_info(self, since, number):
+        """classic в6: answer time + number of the foreground call for the blue call bar (keys active-since, number)"""
+        if (since, number) == getattr(self, 'info', None):
+            return
+        self.info = (since, number)
+        for key, value in (('active-since', str(since)), ('number', GLib.Variant('s', number).print_(False))):
+            try:
+                subprocess.run(['runuser', '-u', 'user', '--', 'env', 'DBUS_SESSION_BUS_ADDRESS=' + USER_BUS, 'gsettings', 'set',
+                                CALLS_SCHEMA, key, value], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            except (OSError, subprocess.SubprocessError) as e:
+                log('calls %s: %s' % (key, e))
+        log('call bar: answered at %s, number %s' % (since or '-', 'set' if number else 'none'))
+
+    def update_calls(self):
+        calls = self.live_calls()
+        since, number = 0, ''
+        if calls:
+            active = [c for c in calls if c[1] == CALL_STATE_ACTIVE]
+            path, state, number = (active or calls)[0]
+            if state == CALL_STATE_ACTIVE:
+                if getattr(self, 'active_path', None) != path:
+                    self.active_path, self.active_t = path, int(time.time())
+                since = self.active_t
+        else:
+            self.active_path = None
+        self.set_calls_info(since, number)
+        self.set_calls_flag(bool(calls))
+
     def recheck(self):
-        self.set_calls_flag(self.call_needs_blank(CALL_ANY_STATES))
+        self.update_calls()
         in_call = self.call_needs_blank() or self.voip_call()
         if in_call and not self.in_call:
             log('call up, polling the proximity sensor every %d s' % POLL_S)

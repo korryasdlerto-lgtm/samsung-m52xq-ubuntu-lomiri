@@ -1,0 +1,82 @@
+Description: serialize the PersonManager database connection (m52xq)
+ The persondb connection of the PersonManager singleton was used from the GUI thread and the
+ avatar image provider threads at once: SQLite heap corruption, SIGSEGV in sqlite3DbMallocRawNN
+ (plasma-dialer opening the call view: contact name + avatar). Recursive mutex around every use
+ and around the creation of the singleton.
+Author: Asdlerto Korry <korryasdlerto@gmail.com>
+Forwarded: no
+Last-Update: 2026-11-08
+---
+--- a/src/personmanager.cpp
++++ b/src/personmanager.cpp
+@@ -10,10 +10,22 @@
+ #include "kpeople_debug.h"
+ 
+ #include <QDir>
++#include <QMutexLocker>
++#include <QRecursiveMutex>
+ #include <QSqlQuery>
+ #include <QStandardPaths>
+ #include <QVariant>
+ 
++/*
++ * The one database connection of the PersonManager singleton is used from several threads: the GUI thread
++ * (PersonData of a QML binding) and the image provider threads of KPeopleDeclarative (avatars, PersonData in
++ * QQuickImageProvider::requestImageResponse). Unserialized, two threads ran queries on it at the same time and
++ * corrupted SQLite's heap (SIGSEGV in sqlite3DbMallocRawNN, plasma-dialer opening the call view: name + avatar).
++ * Every use of the connection and the creation of the singleton are serialized; recursive because mergeContacts()
++ * and unmergeContact() call contactsForPersonUri().
++ */
++static QRecursiveMutex s_dbMutex;
++
+ #if HAVE_QTDBUS
+ #include <QDBusConnection>
+ #include <QDBusMessage>
+@@ -86,6 +98,7 @@
+ 
+ QMultiHash<QString, QString> PersonManager::allPersons() const
+ {
++    QMutexLocker locker(&s_dbMutex);
+     QMultiHash<QString /*PersonID*/, QString /*ContactID*/> contactMapping;
+ 
+     QSqlQuery query = m_db.exec(QStringLiteral("SELECT personID, contactID FROM persons"));
+@@ -99,6 +112,7 @@
+ 
+ QStringList PersonManager::contactsForPersonUri(const QString &personUri) const
+ {
++    QMutexLocker locker(&s_dbMutex);
+     if (!personUri.startsWith(QLatin1String("kpeople://"))) {
+         return QStringList();
+     }
+@@ -118,6 +132,7 @@
+ 
+ QString PersonManager::personUriForContact(const QString &contactUri) const
+ {
++    QMutexLocker locker(&s_dbMutex);
+     QSqlQuery query(m_db);
+     query.prepare(QStringLiteral("SELECT personId FROM persons WHERE contactId = ?"));
+     query.bindValue(0, contactUri);
+@@ -130,6 +145,7 @@
+ 
+ QString PersonManager::mergeContacts(const QStringList &ids)
+ {
++    QMutexLocker locker(&s_dbMutex);
+     // no merging if we have only 0 || 1 ids
+     if (ids.size() < 2) {
+         return QString();
+@@ -247,6 +263,7 @@
+ 
+ bool PersonManager::unmergeContact(const QString &id)
+ {
++    QMutexLocker locker(&s_dbMutex);
+     // remove rows from DB
+     if (id.startsWith(QLatin1String("kpeople://"))) {
+         QSqlQuery query(m_db);
+@@ -283,6 +300,7 @@
+ 
+ PersonManager *PersonManager::instance(const QString &databasePath)
+ {
++    QMutexLocker locker(&s_dbMutex);
+     static PersonManager *s_instance = nullptr;
+     if (!s_instance) {
+         QString path = databasePath;

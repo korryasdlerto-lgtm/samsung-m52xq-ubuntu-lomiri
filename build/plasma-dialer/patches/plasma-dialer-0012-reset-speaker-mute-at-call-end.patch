@@ -1,0 +1,15 @@
+--- a/kde-telephony-daemon/src/dialer-manager.cpp
++++ b/kde-telephony-daemon/src/dialer-manager.cpp
+@@ -140,6 +140,12 @@
+             enable_default_mode();
+             m_needsDefaultAudioMode = false;
+         }
++        // m52xq: the default mode resets the speaker and the microphone in callaudiod, but the cached states stayed: the next call
++        // showed the loud speaker button on (call ended on the loud speaker) while the audio went to the earpiece
++        if (m_dialerUtils) {
++            m_dialerUtils->setSpeakerMode(false);
++            m_dialerUtils->setMute(false);
++        }
+ 
+         break;
+     default:

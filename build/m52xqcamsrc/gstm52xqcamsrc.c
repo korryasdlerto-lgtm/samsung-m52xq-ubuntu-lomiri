@@ -14,8 +14,9 @@
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
 
-#define REAR_ID "/base/soc/cci@ac4a000/i2c-bus@0/camera@2d"	/* s5kgw3, main 64 MP */
-#define FRONT_ID "/base/soc/cci@ac4b000/i2c-bus@0/camera@1a"	/* imx616 */
+/* classic в4: the node is soc@0 in the upstream-style DTB, soc in the old one; the libcamera camera name is the full path */
+#define REAR_PATH "/cci@ac4a000/i2c-bus@0/camera@2d"	/* s5kgw3, main 64 MP */
+#define FRONT_PATH "/cci@ac4b000/i2c-bus@0/camera@1a"	/* imx616 */
 
 
 /* ---- software autofocus of the rear main camera (port of LensAutofocus of plasma-camera, m52xq r33) ----
@@ -276,6 +277,102 @@ static void af_attach(GstPad *pad)
 	gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, af_probe, a, NULL);	/* the Af struct lives as long as the process */
 }
 
+/* ---- digital zoom (classic в8, 2026-11-08) ----
+ * camerabin's own digital zoom crops with videocrop, which crashed (SIGSEGV) on the libcamerasrc frames, so the camera
+ * application had zoom switched off. Here the zoom factor comes from the application as a file XDG_RUNTIME_DIR/m52xq-zoom
+ * ("2.5"), written by its zoom slider / pinch; for a factor > 1 the middle 1/z of every frame is scaled up (nearest neighbour)
+ * into a new buffer of the same size: viewfinder, 64 MP photo and video alike. The libcamera buffer is only read. */
+typedef struct { char *path; double z; guint frame_no; } Zoom;
+
+static void zoom_read(Zoom *zm)
+{
+	gchar *txt = NULL;
+	double z = 1.0;
+	if (g_file_get_contents(zm->path, &txt, NULL, NULL) && txt) {
+		char *end = NULL;
+		double v = g_ascii_strtod(txt, &end);	/* the application runs with a decimal comma locale */
+		if (end && end != txt)
+			z = v;
+		else {
+			g_free(txt);
+			return;	/* created, not written yet: keep the factor */
+		}
+	}
+	g_free(txt);
+	z = CLAMP(z, 1.0, 8.0);
+	if (fabs(z - zm->z) > 0.001) {
+		g_message("m52xq-zoom: %.2fx", z);
+		zm->z = z;
+	}
+}
+
+static GstPadProbeReturn zoom_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
+{
+	Zoom *zm = user_data;
+	GstBuffer *in = GST_PAD_PROBE_INFO_BUFFER(info);
+	if (!in)
+		return GST_PAD_PROBE_OK;
+	GstCaps *caps = gst_pad_get_current_caps(pad);
+	if (!caps)
+		return GST_PAD_PROBE_OK;
+	GstVideoInfo vi;
+	gboolean ok = gst_video_info_from_caps(&vi, caps);
+	gst_caps_unref(caps);
+	if (!ok || GST_VIDEO_INFO_FORMAT(&vi) != GST_VIDEO_FORMAT_BGRx)
+		return GST_PAD_PROBE_OK;
+	int w = GST_VIDEO_INFO_WIDTH(&vi), h = GST_VIDEO_INFO_HEIGHT(&vi);
+	/* photo frames come one or two at a time: read the factor for each of them; the viewfinder every 5th frame */
+	if (w >= 3000 || (zm->frame_no++ % 5) == 0)
+		zoom_read(zm);
+	if (zm->z < 1.01)
+		return GST_PAD_PROBE_OK;
+	GstVideoMeta *vm = gst_buffer_get_video_meta(in);
+	int stride = vm ? vm->stride[0] : w * 4;
+	gsize offset = vm ? vm->offset[0] : 0;
+	GstMapInfo im, om;
+	if (!gst_buffer_map(in, &im, GST_MAP_READ))
+		return GST_PAD_PROBE_OK;
+	if (offset + (gsize)stride * h > im.size) {
+		gst_buffer_unmap(in, &im);
+		return GST_PAD_PROBE_OK;
+	}
+	GstBuffer *out = gst_buffer_new_allocate(NULL, (gsize)w * 4 * h, NULL);
+	if (!out || !gst_buffer_map(out, &om, GST_MAP_WRITE)) {
+		if (out)
+			gst_buffer_unref(out);
+		gst_buffer_unmap(in, &im);
+		return GST_PAD_PROBE_OK;
+	}
+	int cw = (int)(w / zm->z), ch = (int)(h / zm->z);
+	int x0 = (w - cw) / 2, y0 = (h - ch) / 2;
+	gint *xs = g_new(gint, w);
+	for (int x = 0; x < w; x++)
+		xs[x] = x0 + (int)((gint64)x * cw / w);
+	const guint8 *base = im.data + offset;
+	for (int y = 0; y < h; y++) {
+		const guint32 *src = (const guint32 *)(base + (gsize)(y0 + (gint64)y * ch / h) * stride);
+		guint32 *dst = (guint32 *)(om.data + (gsize)y * w * 4);
+		for (int x = 0; x < w; x++)
+			dst[x] = src[xs[x]];
+	}
+	g_free(xs);
+	gst_buffer_unmap(out, &om);
+	gst_buffer_unmap(in, &im);
+	gst_buffer_copy_into(out, in, GST_BUFFER_COPY_FLAGS | GST_BUFFER_COPY_TIMESTAMPS, 0, -1);
+	gst_buffer_unref(in);
+	GST_PAD_PROBE_INFO_DATA(info) = out;
+	return GST_PAD_PROBE_OK;
+}
+
+static void zoom_attach(GstPad *pad)
+{
+	Zoom *zm = g_new0(Zoom, 1);
+	zm->z = 1.0;
+	zm->path = g_build_filename(g_get_user_runtime_dir(), "m52xq-zoom", NULL);
+	zoom_read(zm);
+	gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, zoom_probe, zm, NULL);	/* lives as long as the process, like Af */
+}
+
 typedef struct { GstBin parent; } M52xqCamSrc;
 typedef struct { GstBinClass parent_class; } M52xqCamSrcClass;
 
@@ -291,7 +388,12 @@ static void m52xq_cam_src_init(M52xqCamSrc *self)
 		g_warning("m52xqcamsrc: no libcamerasrc");
 		return;
 	}
-	g_object_set(src, "camera-name", which && !strcmp(which, "front") ? FRONT_ID : REAR_ID, NULL);
+	{
+		const char *soc = g_file_test("/proc/device-tree/soc@0", G_FILE_TEST_IS_DIR) ? "soc@0" : "soc";
+		gchar *name = g_strdup_printf("/base/%s%s", soc, which && !strcmp(which, "front") ? FRONT_PATH : REAR_PATH);
+		g_object_set(src, "camera-name", name, NULL);
+		g_free(name);
+	}
 	/* The software ISP gives the right colours only as XRGB8888 (GStreamer BGRx): for the photo sizes camerabin
 	 * negotiated XBGR8888 and red / blue came out swapped (indoor light turned blue). Keep BGRx, converters after us
 	 * do the rest. */
@@ -304,6 +406,7 @@ static void m52xq_cam_src_init(M52xqCamSrc *self)
 	GstPad *target = gst_element_get_static_pad(filter, "src");
 	if (!(which && !strcmp(which, "front")) && !g_getenv("M52XQ_NO_AF"))
 		af_attach(target);
+	zoom_attach(target);	/* after the autofocus: it measures the sharpness on the unzoomed frame */
 	GstPad *ghost = gst_ghost_pad_new_from_template("src", target, gst_static_pad_template_get(&src_template));
 	gst_object_unref(target);
 	gst_element_add_pad(GST_ELEMENT(self), ghost);

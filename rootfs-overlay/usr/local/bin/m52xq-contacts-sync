@@ -1,0 +1,56 @@
+#!/usr/bin/python3
+# M52XQ classic: the contacts of Lomiri's "Contacts" app (qtcontacts-sqlite) for plasma-dialer, which reads KPeople vCard files
+# (~/.local/share/kpeoplevcard): one m52xq-<id>.vcf per contact with a phone number. Run by m52xq-contacts-sync.path when the
+# database changes. Only files named m52xq-*.vcf are written or removed.
+import os, sqlite3, sys
+
+HOME = os.path.expanduser('~')
+DB = HOME + '/.local/share/system/privileged/Contacts/qtcontacts-sqlite/contacts.db'
+OUT = HOME + '/.local/share/kpeoplevcard'
+
+
+def esc(s):
+    return (s or '').replace('\\', '\\\\').replace(',', '\\,').replace(';', '\;').replace('\n', '\\n')
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    want = {}
+    if os.path.exists(DB):
+        con = sqlite3.connect('file:%s?mode=ro' % DB, uri=True, timeout=5)
+        cur = con.cursor()
+        ids = [r[0] for r in cur.execute('select contactId from Contacts where (deleted is null or deleted = 0)')]
+        for cid in ids:
+            phones = [r for r in cur.execute('select phoneNumber, subTypes from PhoneNumbers where contactId = ?', (cid,)) if r[0]]
+            if not phones:
+                continue
+            name = cur.execute('select firstName, lastName, middleName, prefix, suffix from Names where contactId = ?', (cid,)).fetchone()
+            label = cur.execute('select displayLabel from DisplayLabels where contactId = ?', (cid,)).fetchone()
+            first, last, middle, prefix, suffix = name if name else ('', '', '', '', '')
+            fn = (label[0] if label and label[0] else ' '.join(x for x in (first, middle, last) if x)) or phones[0][0]
+            lines = ['BEGIN:VCARD', 'VERSION:3.0', 'UID:m52xq-%d' % cid, 'FN:' + esc(fn),
+                     'N:%s;%s;%s;%s;%s' % (esc(last), esc(first), esc(middle), esc(prefix), esc(suffix))]
+            for number, sub in phones:
+                t = 'CELL' if sub and '1' in str(sub).split(';') else 'VOICE'
+                lines.append('TEL;TYPE=%s:%s' % (t, number))
+            lines.append('END:VCARD')
+            want['m52xq-%d.vcf' % cid] = '\r\n'.join(lines) + '\r\n'
+        con.close()
+    for f in os.listdir(OUT):
+        if f.startswith('m52xq-') and f.endswith('.vcf') and f not in want:
+            os.remove(os.path.join(OUT, f))
+    for f, text in want.items():
+        p = os.path.join(OUT, f)
+        try:
+            if open(p, encoding='utf-8').read() == text:
+                continue
+        except OSError:
+            pass
+        with open(p + '.tmp', 'w', encoding='utf-8') as fh:
+            fh.write(text)
+        os.replace(p + '.tmp', p)
+    print('m52xq-contacts-sync: %d contacts with a phone number' % len(want))
+
+
+if __name__ == '__main__':
+    sys.exit(main())

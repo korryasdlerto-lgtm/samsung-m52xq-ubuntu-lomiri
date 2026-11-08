@@ -1,0 +1,77 @@
+--- a/drivers/net/wireless/ath/ath11k/ahb.c
++++ b/drivers/net/wireless/ath/ath11k/ahb.c
+@@ -1326,6 +1326,10 @@
+ 	ath11k_ahb_free_resources(ab);
+ }
+ 
++static bool m52xq_off_ps = true;
++module_param(m52xq_off_ps, bool, 0644);
++MODULE_PARM_DESC(m52xq_off_ps, "M52XQ: send SMP2P POWER_SAVE_ENTER at system suspend while the radio is off");
++
+ static __maybe_unused int ath11k_ahb_pm_suspend(struct device *dev)
+ {
+ 	struct ath11k_base *ab = dev_get_drvdata(dev);
+@@ -1338,6 +1342,24 @@
+ 	if (ret && ret != -EOPNOTSUPP)
+ 		ath11k_warn(ab, "failed to suspend core: %d\n", ret);
+ 
++	/*
++	 * m52xq: WCN6750 has supports_suspend = false, so the core does nothing at system suspend and POWER_SAVE_ENTER
++	 * is only sent by the mac80211 WoW path, i.e. with an interface up. With the radio off (rfkill from the quick
++	 * settings, interface down) nobody told WPSS to sleep: it stayed awake all night (qcom_stats wpss 5 s of 12 h,
++	 * ~2 %/h; 2026-11-08). Send it here when the radio is off, and POWER_SAVE_EXIT at resume.
++	 */
++	if (ret == -EOPNOTSUPP && m52xq_off_ps && ab->hw_rev == ATH11K_HW_WCN6750_HW10) {
++		struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
++		struct ath11k *ar = ab->pdevs[0].ar;
++
++		if (ar && ar->state == ATH11K_STATE_OFF &&
++		    !test_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags) &&
++		    !ath11k_ahb_hif_suspend(ab)) {
++			ab_ahb->m52xq_off_ps = true;
++			ath11k_dbg(ab, ATH11K_DBG_AHB, "m52xq: radio off, power save enter sent\n");
++		}
++	}
++
+ 	/* do not block the system suspend */
+ 	return 0;
+ }
+@@ -1350,6 +1372,27 @@
+ 	if (test_bit(ATH11K_FLAG_QMI_FAIL, &ab->dev_flags))
+ 		return 0;
+ 
++	{
++		struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
++
++		if (ab_ahb->m52xq_off_ps) {
++			u32 value;
++
++			/*
++			 * With the radio off the firmware sends no WoW wakeup event for POWER_SAVE_EXIT: waiting for it
++			 * (ath11k_ahb_hif_resume) only delayed every resume by 3 s. Send it and go on.
++			 */
++			ab_ahb->m52xq_off_ps = false;
++			disable_irq_wake(ab->irq_num[ATH11K_PCI_IRQ_CE0_OFFSET + ATH11K_PCI_CE_WAKE_IRQ]);
++			value = u32_encode_bits(ab_ahb->smp2p_info.seq_no++, ATH11K_AHB_SMP2P_SMEM_SEQ_NO);
++			value |= u32_encode_bits(ATH11K_AHB_POWER_SAVE_EXIT, ATH11K_AHB_SMP2P_SMEM_MSG);
++			ret = qcom_smem_state_update_bits(ab_ahb->smp2p_info.smem_state,
++							  ATH11K_AHB_SMP2P_SMEM_VALUE_MASK, value);
++			if (ret)
++				ath11k_warn(ab, "m52xq: power save exit with the radio off: %d\n", ret);
++		}
++	}
++
+ 	ret = ath11k_core_resume(ab);
+ 	if (ret && ret != -EOPNOTSUPP)
+ 		ath11k_warn(ab, "failed to resume core: %d\n", ret);
+--- a/drivers/net/wireless/ath/ath11k/ahb.h
++++ b/drivers/net/wireless/ath/ath11k/ahb.h
+@@ -23,6 +23,8 @@
+ 
+ struct ath11k_ahb {
+ 	struct rproc *tgt_rproc;
++	/* m52xq: POWER_SAVE_ENTER was sent at system suspend with the radio off */
++	bool m52xq_off_ps;
+ 	struct {
+ 		struct device *dev;
+ 		struct iommu_domain *iommu_domain;

@@ -1,0 +1,10 @@
+[Unit]
+Description=M52XQ: sync the Lomiri contacts when they change
+
+[Path]
+PathChanged=%h/.local/share/system/privileged/Contacts/qtcontacts-sqlite/contacts.db
+PathChanged=%h/.local/share/system/privileged/Contacts/qtcontacts-sqlite/contacts.db-wal
+Unit=m52xq-contacts-sync.service
+
+[Install]
+WantedBy=default.target

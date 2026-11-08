@@ -1,0 +1,20 @@
+#!/bin/sh
+# m52xq classic в8: compressed swap in RAM. Without any swap a 64 MP photo (9240x6936 XRGB8888 buffers + the software ISP
+# re-mosaicing, ~3.5 GB peak) made the OOM killer kill the camera (2026-11-08 20:07:36); with 3 GB zstd zram two 64 MP shots
+# in a row were saved (345 MB swapped, 116 MB compressed).
+Z=/sys/block/zram0
+case "$1" in
+start)
+	[ -e $Z ] || exit 0
+	grep -q '^/dev/zram0 ' /proc/swaps && exit 0
+	echo zstd > $Z/comp_algorithm 2>/dev/null || echo lz4 > $Z/comp_algorithm
+	echo 3G > $Z/disksize
+	mkswap -q /dev/zram0
+	swapon -p 100 /dev/zram0
+	;;
+stop)
+	swapoff /dev/zram0 2>/dev/null
+	echo 1 > $Z/reset 2>/dev/null
+	;;
+esac
+exit 0

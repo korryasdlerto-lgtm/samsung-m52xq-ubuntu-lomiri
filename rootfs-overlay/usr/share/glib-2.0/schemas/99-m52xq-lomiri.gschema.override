@@ -1,7 +1,7 @@
 # классик (из pmOS 003/в3): обои с котом, значок кнопки лаунчера Ubuntu Touch, фон экрана приветствия
 [com.lomiri.Shell]
 # кот на квадратном холсте: PreserveAspectCrop показывает кота целиком в ландшафте и всю морду в портрете
-background-picture-uri='file:///usr/share/backgrounds/warty-final-ubuntu-square.png'
+background-picture-uri='file:///usr/share/backgrounds/warty-final-ubuntu-square-2400.jpg'
 always-show-osk=true
 # редактор скриншотов открывался после каждого снимка и не закрывался: только сохранять
 enable-screenshot-editor=false
@@ -18,9 +18,8 @@ items=['application:///org.kde.plasma.dialer.desktop', 'application:///org.kde.s
 # экранная клавиатура: русская и английская раскладки (глобус)
 [com.lomiri.keyboard.maliit]
 enabled-languages=['en', 'ru', 'emoji']
-active-language='ru'
+active-language='en'
 
-# звук при блокировке экрана: Lomiri останавливает (SIGSTOP) приложения не из этого списка (Stage.qml: exemptFromLifecycle),
-# вместе с ними замолкало воспроизведение; идентификатор — короткий appId (до «_»)
+# Lomiri stops an app when the screen locks; these keep playing (ПРАВКИ п. 98, it was only a user setting on the old phone)
 [com.canonical.qtmir]
-lifecycle-exempt-appids=['music.ubports', 'morph-browser', 'youtube-web.mateo-salta', 'firefox.wayland']
+lifecycle-exempt-appids=['music.ubports', 'morph-browser', 'youtube-web.mateo-salta']

@@ -1,0 +1,242 @@
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -21,11 +21,16 @@
+ module_param(playback_uplink, bool, 0644);
+ MODULE_PARM_DESC(playback_uplink, "m52xq: feed the VOICE_PLAYBACK_TX pseudo port into the voice Tx stream during a call (USB headset microphone)");
+ 
++static bool device_switch = true;
++module_param(device_switch, bool, 0644);
++MODULE_PARM_DESC(device_switch, "m52xq: switch the Rx device of a running call in place (MVM pause, vocproc SET_DEVICE, start) instead of re-creating the voice sessions");
++
+ struct q6voice_path_runtime {
+ 	struct q6voice_session *sessions[Q6VOICE_SERVICE_COUNT];
+ 	unsigned int started;
+ 	bool recording;
+ 	bool playing;
++	bool paused;	/* m52xq: device switch in progress (MVM paused, Rx route removed) */
+ };
+ 
+ struct q6voice_path {
+@@ -162,7 +167,7 @@
+ 
+ 	mutex_lock(&p->lock);
+ 	if (!p->runtime) {
+-		p->runtime = kzalloc(sizeof(*p), GFP_KERNEL);
++		p->runtime = kzalloc(sizeof(*p->runtime), GFP_KERNEL);
+ 		if (!p->runtime) {
+ 			ret = -ENOMEM;
+ 			goto out;
+@@ -202,6 +207,8 @@
+ 
+ 	dev_dbg(dev, "stop path %d\n", p->type);
+ 
++	p->runtime->paused = false;
++
+ 	if (p->runtime->playing) {
+ 		ret = q6cvs_playback(p->runtime->sessions[Q6VOICE_SERVICE_CVS], false);
+ 		if (ret)
+@@ -341,6 +348,78 @@
+ }
+ EXPORT_SYMBOL_GPL(q6voice_set_port);
+ 
++/*
++ * m52xq: in-place device switch of a running call, as downstream msm-pcm-routing does:
++ * removing the Rx route of the running path pauses the call (voc_disable_device), routing
++ * it to the new (already started) backend moves the vocproc there with SET_DEVICE, sends
++ * media format, topology commit and calibration of the new device and starts the call
++ * again (voc_enable_device). Called by the Rx voice mixer controls.
++ */
++void q6voice_device_pause(struct q6voice *v, enum q6voice_path_type path)
++{
++	struct q6voice_path *p = &v->paths[path];
++	struct q6voice_session *mvm;
++	int ret;
++
++	if (!device_switch)
++		return;
++
++	mutex_lock(&p->lock);
++	if (!p->runtime || p->runtime->started != 3 || p->runtime->paused)
++		goto out;
++	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
++	if (!mvm || !p->runtime->sessions[Q6VOICE_SERVICE_CVP])
++		goto out;
++
++	ret = q6mvm_pause(mvm);
++	if (ret)
++		dev_err(v->dev, "m52xq: voice device switch: pause failed: %d\n", ret);
++	p->runtime->paused = true;
++	dev_info(v->dev, "m52xq: voice device switch: paused (rx port %d)\n", p->rx_port);
++out:
++	mutex_unlock(&p->lock);
++}
++EXPORT_SYMBOL_GPL(q6voice_device_pause);
++
++void q6voice_device_resume(struct q6voice *v, enum q6voice_path_type path)
++{
++	struct q6voice_path *p = &v->paths[path];
++	struct q6voice_session *mvm, *cvp;
++	u16 tx_port, rx_port;
++	int ret;
++
++	mutex_lock(&p->lock);
++	if (!p->runtime || !p->runtime->paused || !p->rx_port)
++		goto out;
++	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
++	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
++	tx_port = q6afe_get_port_id(p->tx_port);
++	rx_port = q6afe_get_port_id(p->rx_port);
++
++	ret = q6cvp_set_device(cvp, tx_port, rx_port);
++	if (ret) {
++		dev_err(v->dev, "m52xq: voice device switch failed: set device %#x/%#x: %d\n",
++			tx_port, rx_port, ret);
++		goto start;
++	}
++	ret = q6cvp_set_media(cvp, rx_port, 2, tx_port, 2, 48000);
++	if (ret)
++		dev_err(v->dev, "m52xq: voice device switch failed: media format: %d\n", ret);
++start:
++	p->runtime->paused = false;
++	ret = q6mvm_start(mvm, true);
++	if (ret)
++		dev_err(v->dev, "m52xq: voice device switch failed: start: %d\n", ret);
++	if (q6cvp_dev_unmute_enabled()) {
++		q6cvp_set_mute(cvp, 0, false);
++		q6cvp_set_mute(cvp, 1, false);
++	}
++	dev_info(v->dev, "m52xq: voice device switch: running on rx port %#x\n", rx_port);
++out:
++	mutex_unlock(&p->lock);
++}
++EXPORT_SYMBOL_GPL(q6voice_device_resume);
++
+ MODULE_AUTHOR("Stephan Gerhold <stephan@gerhold.net>");
+ MODULE_DESCRIPTION("Q6Voice driver");
+ MODULE_LICENSE("GPL v2");
+--- a/sound/soc/qcom/qdsp6/q6voice.h
++++ b/sound/soc/qcom/qdsp6/q6voice.h
+@@ -24,5 +24,7 @@
+ 		     bool capture);
+ void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+ 		      bool capture, int index);
++void q6voice_device_pause(struct q6voice *v, enum q6voice_path_type path);
++void q6voice_device_resume(struct q6voice *v, enum q6voice_path_type path);
+ 
+ #endif /*_Q6_VOICE_H */
+--- a/sound/soc/qcom/qdsp6/q6voice-dai.c
++++ b/sound/soc/qcom/qdsp6/q6voice-dai.c
+@@ -108,12 +108,23 @@
+ 	bool val = !!ucontrol->value.integer.value[0];
+ 	bool capture = !!mc->shift;
+ 
++	/*
++	 * m52xq: Rx route of a running call removed -> pause the call before DPCM stops the old
++	 * backend; Rx route added -> DPCM starts the new backend in update_power, then the
++	 * vocproc moves there (no new voice sessions in the middle of the call).
++	 */
++	if (!capture && !val && q6voice_get_port(v, Q6VOICE_PATH_VOICE, capture) == mc->reg)
++		q6voice_device_pause(v, Q6VOICE_PATH_VOICE);
++
+ 	if (val)
+ 		q6voice_set_port(v, Q6VOICE_PATH_VOICE, capture, mc->reg);
+ 	else if (q6voice_get_port(v, Q6VOICE_PATH_VOICE, capture) == mc->reg)
+ 		q6voice_set_port(v, Q6VOICE_PATH_VOICE, capture, 0);
+ 
+ 	snd_soc_dapm_mixer_update_power(dapm, kcontrol, val, NULL);
++
++	if (!capture && val)
++		q6voice_device_resume(v, Q6VOICE_PATH_VOICE);
+ 	return 1;
+ }
+ 
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -170,6 +170,42 @@
+ }
+ EXPORT_SYMBOL_GPL(q6cvp_session_create);
+ 
++#define VSS_IVOCPROC_CMD_SET_DEVICE_V3			0x0001316A
++
++struct vss_ivocproc_cmd_set_device_cmd {
++	struct apr_hdr hdr;
++	u16 tx_port_id;
++	u32 tx_topology_id;
++	u16 rx_port_id;
++	u32 rx_topology_id;
++	u32 vocproc_mode;
++	u16 ec_ref_port_id;
++} __packed;
++
++/*
++ * m52xq: move a paused vocproc to other device ports (downstream voc_enable_device() ->
++ * voice_send_set_device_cmd(), V3 for CVD >= 2.2) instead of destroying and re-creating it:
++ * re-created vocprocs attached in the middle of a call crashed the ADSP audio PD while
++ * their calibration was sent (AfeDyb030, 3rd-4th session of a call).
++ */
++int q6cvp_set_device(struct q6voice_session *cvp, u16 tx_port, u16 rx_port)
++{
++	struct vss_ivocproc_cmd_set_device_cmd cmd;
++
++	memset(&cmd, 0, sizeof(cmd));
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_IVOCPROC_CMD_SET_DEVICE_V3;
++	cmd.tx_port_id = tx_port;
++	cmd.tx_topology_id = tx_topology;
++	cmd.rx_port_id = rx_port;
++	cmd.rx_topology_id = rx_topology;
++	cmd.vocproc_mode = vocproc_mode;
++	cmd.ec_ref_port_id = VSS_IVOCPROC_PORT_ID_NONE;
++
++	return q6voice_common_send(cvp, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvp_set_device);
++
+ /*
+  * m52xq (SM7325, CVD 2.x): newer ADSP voice firmware needs the vocproc device
+  * media format and a topology commit after the session is created, and a
+--- a/sound/soc/qcom/qdsp6/q6cvp.h
++++ b/sound/soc/qcom/qdsp6/q6cvp.h
+@@ -9,6 +9,7 @@
+ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 					     u16 tx_port, u16 rx_port);
+ int q6cvp_enable(struct q6voice_session *cvp, bool enable);
++int q6cvp_set_device(struct q6voice_session *cvp, u16 tx_port, u16 rx_port);
+ int q6cvp_set_media(struct q6voice_session *cvp, u16 rx_port, unsigned int rx_ch,
+ 		    u16 tx_port, unsigned int tx_ch, unsigned int rate);
+ 
+--- a/sound/soc/qcom/qdsp6/q6mvm.c
++++ b/sound/soc/qcom/qdsp6/q6mvm.c
+@@ -140,6 +140,23 @@
+ }
+ EXPORT_SYMBOL_GPL(q6mvm_start);
+ 
++#define VSS_IMVM_CMD_PAUSE_VOICE			0x0001137D
++
++/*
++ * m52xq: pause the voice call for a device switch (downstream voc_disable_device() ->
++ * voice_pause_voice_call()); the attached vocprocs stop, the sessions stay.
++ */
++int q6mvm_pause(struct q6voice_session *mvm)
++{
++	struct apr_pkt cmd;
++
++	cmd.hdr.pkt_size = APR_HDR_SIZE;
++	cmd.hdr.opcode = VSS_IMVM_CMD_PAUSE_VOICE;
++
++	return q6voice_common_send(mvm, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6mvm_pause);
++
+ static int q6mvm_probe(struct apr_device *adev)
+ {
+ 	int ret;
+--- a/sound/soc/qcom/qdsp6/q6mvm.h
++++ b/sound/soc/qcom/qdsp6/q6mvm.h
+@@ -11,5 +11,6 @@
+ int q6mvm_attach(struct q6voice_session *mvm, struct q6voice_session *cvp,
+ 		 bool state);
+ int q6mvm_start(struct q6voice_session *mvm, bool state);
++int q6mvm_pause(struct q6voice_session *mvm);
+ 
+ #endif /*_Q6_MVM_H */

@@ -1,0 +1,26 @@
+#!/bin/sh
+# M52XQ: bring the sound card up after the ADSP start race. At boot q6afe sometimes gets "cmd 0x100f4 ... Unknown cmd", then "AFE failed
+# to vote", the LPASS LPI pinctrl probe ends with -ETIMEDOUT and is never tried again: the codecs stay deferred, "no soundcards",
+# PipeWire has only auto_null. Binding the pinctrl device again brings the card up (found 23.10, happened on 06.11 twice in a row).
+D=/sys/bus/platform/drivers/qcom-sc7280-lpass-lpi-pinctrl
+log() { echo "m52xq-audio-rescue: $*" > /dev/kmsg 2>/dev/null; echo "$*"; }
+card() { [ -e /proc/asound/card0 ]; }
+i=0
+while [ $i -lt 15 ]; do
+	card && exit 0
+	sleep 1
+	i=$((i + 1))
+done
+for try in 1 2 3; do
+	for d in /sys/bus/platform/devices/33c0000.*; do
+		[ -e "$d/driver" ] || echo "${d##*/}" > $D/bind 2>/dev/null
+	done
+	i=0
+	while [ $i -lt 10 ]; do
+		card && { log "sound card up after bind $try"; exit 0; }
+		sleep 1
+		i=$((i + 1))
+	done
+done
+log "no sound card after 3 binds"
+exit 1

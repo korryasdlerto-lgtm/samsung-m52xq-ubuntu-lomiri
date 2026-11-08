@@ -29,7 +29,10 @@ export QT_IM_MODULE="${QT_IM_MODULE:-maliit}"
 export UITK_ICON_THEME="${UITK_ICON_THEME:-suru}"
 # the language is not passed either (System Settings and the apps stayed English): the one of the wizard / Settings
 l=$(busctl --system get-property org.freedesktop.Accounts "/org/freedesktop/Accounts/User$(id -u)" \
-	org.freedesktop.Accounts.User Language 2>/dev/null | sed -n 's/^s "\(.*\)"$/\1/p')
+	org.freedesktop.Accounts.User Languages 2>/dev/null | sed -n 's/^as [1-9][0-9]* "\([^"]*\)".*/\1/p')
+# classic в5: Languages, not Language: the wizard and Settings write Languages, Language stays "en" without ~/.pam_environment
+# AccountsService reports en_US as "en": there is no en.UTF-8 locale
+[ "$l" = en ] && l=en_US
 [ -n "$l" ] && export LANG="${l%%.*}.UTF-8" LANGUAGE="${l%%.*}"
 # Brightness page of System Settings did not load: libLomiriBrightnessPanel.so (lomiri-system-settings 1.5.0) leaves
 # DeviceModel::slotAdapterPropertiesChanged undefined ("plugin cannot be loaded for module Lomiri.SystemSettings.Brightness").

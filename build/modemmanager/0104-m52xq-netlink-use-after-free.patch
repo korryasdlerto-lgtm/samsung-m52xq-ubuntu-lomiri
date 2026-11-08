@@ -1,0 +1,33 @@
+--- a/src/mm-netlink.c
++++ b/src/mm-netlink.c
+@@ -229,9 +229,12 @@
+ {
+     GTask *task;
+     guint32 sequence_id;
++    MsgFunc completion_fn;
+ 
+     task = g_steal_pointer (&tr->completion_task);
+     sequence_id = tr->sequence_id;
++    /* m52xq: g_hash_table_remove() frees tr (transaction_free): read the callback first, it was called through freed memory */
++    completion_fn = tr->completion_fn;
+ 
+     g_hash_table_remove (tr->self->transactions,
+                          GUINT_TO_POINTER (tr->sequence_id));
+@@ -239,7 +242,7 @@
+     if (!saved_errno) {
+         GError *error = NULL;
+ 
+-        if (!tr->completion_fn (task, hdr, &error))
++        if (!completion_fn (task, hdr, &error))
+             g_task_return_error (task, error);
+     } else {
+         g_task_return_new_error (task, G_IO_ERROR, g_io_error_from_errno (saved_errno),
+@@ -522,7 +525,7 @@
+ 
+         switch (hdr->nlmsg_type) {
+         case NLMSG_ERROR:
+-            err = NLMSG_DATA (buf);
++            err = NLMSG_DATA (hdr);	/* m52xq: the error of this message, not of the first one in the buffer */
+             nlerr = err->error;
+             break;
+         case RTM_NEWLINK:

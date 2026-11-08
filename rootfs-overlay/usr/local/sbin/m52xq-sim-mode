@@ -189,7 +189,15 @@ mm_stable() {
 	sleep 20	# the modems come up one after another: stable means the same process meanwhile
 	[ "$(systemctl show -P MainPID ModemManager)" = "$pid" ]
 }
-mm_stable && exit 0
+# classic в4: one crash of ModemManager at boot saved "only SIM1" and lost SIM2: systemd restarts it, check again. Only 3 bad rounds in a row
+# mean a broken mode
+tries=0
+while [ $tries -lt 3 ]; do
+	mm_stable && exit 0
+	tries=$((tries + 1))
+	echo "m52xq-sim-mode: ModemManager not stable in mode $mode (round $tries of 3)" >&2
+	sleep 5
+done
 echo "m52xq-sim-mode: ModemManager failed in mode $mode, back to sim1" >&2
 "$0" sim1
 exit 1

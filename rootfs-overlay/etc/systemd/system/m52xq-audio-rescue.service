@@ -1,0 +1,11 @@
+[Unit]
+Description=M52XQ: bring the sound card up after the ADSP start race
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/m52xq-audio-rescue
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

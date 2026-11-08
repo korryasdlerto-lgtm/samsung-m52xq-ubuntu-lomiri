@@ -1,0 +1,4 @@
+#!/bin/sh
+# classic в5: Chromium treats a window out of focus as a background tab: YouTube ended in "videoError" when the browser was not on screen
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-background-media-suspend --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
+exec /usr/bin/morph-browser "$@"

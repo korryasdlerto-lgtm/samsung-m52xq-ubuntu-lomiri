@@ -1,0 +1,14 @@
+[Unit]
+Description=M52XQ: ssh host keys of this phone (the public image has none)
+# early, before the sockets: Before=ssh.socket after basic.target was an ordering cycle and systemd dropped ssh at some boots
+DefaultDependencies=no
+After=local-fs.target
+Before=sockets.target ssh.socket ssh.service
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=sysinit.target

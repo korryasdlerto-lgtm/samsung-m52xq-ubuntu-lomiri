@@ -1,0 +1,74 @@
+--- a/drivers/gpu/drm/panel/panel-samsung-s6e3hab-amb667an01.c
++++ b/drivers/gpu/drm/panel/panel-samsung-s6e3hab-amb667an01.c
+@@ -53,16 +53,25 @@
+ static int s6e3hab_amb667an01_set_dark(struct mipi_dsi_device *dsi, bool dark);
+ static void s6e3hab_amb667an01_wake(struct s6e3hab_amb667an01 *ctx);
+ 
++/* M52XQ v256: user brightness of the panel (0 = user space keeps the screen dark) */
++static unsigned int s6e3hab_amb667an01_level(struct s6e3hab_amb667an01 *ctx)
++{
++	struct backlight_device *bl = ctx->panel.backlight;
++
++	return bl ? bl->props.brightness : 255;
++}
++
+ /* called with dark_resume_lock held */
+ static void dark_resume_end(void)
+ {
+ 	struct s6e3hab_amb667an01 *ctx = m52xq_panel;
+ 
+ 	dark_resume_on = false;
+-	if (ctx && ctx->enabled && ctx->asleep) {
++	/* v256: with brightness 0 the panel stays asleep; the next brightness > 0 wakes it */
++	if (ctx && ctx->enabled && ctx->asleep && s6e3hab_amb667an01_level(ctx)) {
+ 		dev_dbg(&ctx->dsi->dev, "M52XQ: dark resume ended, panel woken up\n");
+ 		s6e3hab_amb667an01_wake(ctx);
+-	} else if (ctx && ctx->enabled && ctx->resume_dark) {
++	} else if (ctx && ctx->enabled && ctx->resume_dark && !ctx->asleep && s6e3hab_amb667an01_level(ctx)) {
+ 		dev_dbg(&ctx->dsi->dev, "M52XQ: dark resume ended, display on\n");
+ 		s6e3hab_amb667an01_set_dark(ctx->dsi, false);
+ 	}
+@@ -298,11 +307,17 @@
+ 	 * itself stayed off (seen on 23.10). It stays in sleep/reset; dark_resume_end() wakes it if the phone
+ 	 * really wakes up (key, notification).
+ 	 */
++	/*
++	 * M52XQ v256: also while user space keeps the brightness at 0. Lomiri (classic) never switches the output off, it only
++	 * sets brightness 0 (DCS display off): the system suspend disabled the panel and the resume woke it up in the kernel,
++	 * before the system-sleep hook could set dark_resume - a flash on every Wi-Fi / mobile data / USB wake-up
++	 * (2026-11-08). With brightness 0 there is nothing to show: the panel sleeps until the brightness goes up.
++	 */
+ 	mutex_lock(&dark_resume_lock);
+-	if (dark_resume_active()) {
++	if (dark_resume_active() || !s6e3hab_amb667an01_level(ctx)) {
+ 		ctx->asleep = true;
+ 		mutex_unlock(&dark_resume_lock);
+-		dev_dbg(dev, "M52XQ: dark resume, panel kept asleep\n");
++		dev_info(dev, "M52XQ: panel kept asleep (%s)\n", dark_resume_on ? "dark resume" : "brightness 0");
+ 		return 0;
+ 	}
+ 	mutex_unlock(&dark_resume_lock);
+@@ -582,9 +597,21 @@
+ 	u16 level = min_t(u16, backlight_get_brightness(bl), 255);
+ 	int ret;
+ 
+-	/* v234: the panel is asleep (dark resume): the level is applied when it is woken up */
+-	if (ctx && READ_ONCE(ctx->asleep))
++	/*
++	 * v234: the panel is asleep (dark resume): the level is applied when it is woken up.
++	 * v256: outside the dark resume a brightness > 0 (power key, call) wakes it up here.
++	 */
++	if (ctx && READ_ONCE(ctx->asleep)) {
++		if (!bl->props.brightness || backlight_is_blank(bl))
++			return 0;
++		mutex_lock(&dark_resume_lock);
++		if (ctx->asleep && ctx->enabled && !dark_resume_active()) {
++			s6e3hab_amb667an01_wake(ctx);
++			dev_info(&dsi->dev, "M52XQ: panel woken up by brightness %d\n", bl->props.brightness);
++		}
++		mutex_unlock(&dark_resume_lock);
+ 		return 0;
++	}
+ 
+ 	if (!backlight_is_blank(bl)) {
+ 		if (bl->props.brightness == 0)

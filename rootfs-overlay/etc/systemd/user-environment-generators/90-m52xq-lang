@@ -1,9 +1,14 @@
 #!/bin/sh
-# языковое окружение пользовательской сессии из AccountsService (язык, выбранный в мастере): без этого индикаторы
-# верхней панели и сам Lomiri остаются на английском (LANG из /etc/default/locale)
-u=$(id -u)
-l=$(busctl --system get-property org.freedesktop.Accounts /org/freedesktop/Accounts/User$u org.freedesktop.Accounts.User Language 2>/dev/null | sed -n 's/^s "\(.*\)"$/\1/p')
+# m52xq classic в8: systemd user environment generator - the language of the user for every user service (Lomiri, the shade
+# indicators, the apps). Run by the user manager when it starts, before any unit: the indicators are pulled in by
+# graphical-session.target in parallel with Lomiri, so an ExecStartPre of lomiri-full-greeter.service came too late for them
+# (they kept LANG=en_US.UTF-8 of /etc/default/locale with the greeter's LANGUAGE=ru: date / number formats English, 2026-11-08).
+# The language is the one chosen in the first-run wizard / System Settings (AccountsService "Languages"); nothing is printed
+# when none was chosen yet (the system default stays).
+l=$(busctl --system get-property org.freedesktop.Accounts "/org/freedesktop/Accounts/User$(id -u)" \
+	org.freedesktop.Accounts.User Languages 2>/dev/null | sed -n 's/^as [1-9][0-9]* "\([^"]*\)".*/\1/p')
+[ "$l" = en ] && l=en_US	# AccountsService reports en_US as "en": there is no en.UTF-8 locale
 [ -n "$l" ] || exit 0
 l=${l%%.*}
 echo "LANG=$l.UTF-8"
-echo "LANGUAGE=${l%%_*}"
+echo "LANGUAGE=$l"

@@ -1,0 +1,14 @@
+[Unit]
+Description=M52XQ: compressed swap in RAM (zram0, zstd, 3 GB) - 64 MP photos without the OOM killer
+DefaultDependencies=no
+Before=swap.target
+ConditionPathExists=/sys/block/zram0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/m52xq-zram start
+ExecStop=/usr/local/sbin/m52xq-zram stop
+
+[Install]
+WantedBy=swap.target
